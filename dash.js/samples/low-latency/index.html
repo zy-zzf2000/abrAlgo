@@ -9,6 +9,8 @@
     <script src="abr/LoLp_BitrateSelection.js" class="code"></script>
     <script src="abr/LoLp_QoEEvaluation.js" class="code"></script>
     <script src="abr/LoLp_WeightSelection.js" class="code"></script>
+    <script src="abr/LowestBitrateRule.js" class="code"></script>
+    <script src="abr/MPCRule.js" class="code"></script>
 
     <script class="code">
         var player, targetLatency, minDrift, catchupPlaybackRate;
@@ -45,6 +47,8 @@
             // TgcLearningRule //
             ruleUsed = 'TgcLearningRule';   // for result logging later
             player.addABRCustomRule('qualitySwitchRules', 'TgcLearningRule', TgcLearningRule);
+            // player.addABRCustomRule('qualitySwitchRules', 'LowestBitrateRule', LowestBitrateRule);
+            // player.addABRCustomRule('qualitySwitchRules', 'RMPCRule', RMPCRule);
 
             player.updateSettings({
                 'streaming': {

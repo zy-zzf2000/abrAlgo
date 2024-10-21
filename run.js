@@ -3,9 +3,8 @@ const puppeteer = require("puppeteer-core");
 const normalNetworkPatterns = require("./normal-network-patterns.js");
 const fastNetworkPatterns = require("./fast-network-patterns.js");
 const stats = require("./stats");
-const CHROME_PATH =
-  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
-
+const CHROME_PATH ="C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
+const CUR_MODEL = "LOLP"
 let patterns;
 if (process.env.npm_package_config_ffmpeg_profile === 'PROFILE_FAST') {
   patterns = fastNetworkPatterns;
@@ -23,7 +22,9 @@ run()
     if (!fs.existsSync('./results')){
       fs.mkdirSync('./results');
     }
-    fs.writeFileSync(`./results/run-${NETWORK_PROFILE}-${new Date().toISOString().split(' ').join('-')}.json`, JSON.stringify(result));
+    ts = Date.now();
+    filenam = ts + "_" + CUR_MODEL + ".json";
+    fs.writeFileSync(`./results/${filenam}`, JSON.stringify(result));
   })
   .catch(error => console.log(error));
 
@@ -36,6 +37,15 @@ async function run() {
   });
 
   const page = await browser.newPage();
+
+  // Array to store console logs
+  const consoleLogs = [];
+
+  // Capture console logs
+  page.on('console', msg => {
+    consoleLogs.push(msg.text());
+  });
+
   await page.goto("http://localhost:3000/samples/low-latency/index.html");
   const cdpClient = await page.target().createCDPSession();
 
@@ -69,7 +79,7 @@ async function run() {
     window.startRecording();
   });
 
-  await runNetworkPattern(cdpClient, NETWORK_PROFILE);
+  await runNetworkPattern(cdpClient, NETWORK_PROFILE,page);
 
   const metrics = await page.evaluate(() => {
     if (window.stopRecording) {
@@ -80,15 +90,23 @@ async function run() {
     return window.abrHistory;
   });
   console.log("Run complete");
+  const logMessage = `Run complete`;
+  await page.evaluate(msg => {
+    console.log(msg);
+  }, logMessage);
+
+  const logFileName = `${Date.now()}_console_logs.txt`;
+  fs.writeFileSync(`./results/${logFileName}`, consoleLogs.join('\n'));
   if (!metrics) {
     console.log("No metrics were returned. Stats will not be logged.");
   }
-  console.log(metrics);
+  console.log("the metrics:")
+  console.log(JSON.stringify(metrics, null, 2));
   ({ switchHistory, ...result } = metrics);
   result.averageBitrate = stats.computeAverageBitrate(switchHistory);
   result.numSwitches = switchHistory.length;
-
-  console.log(result);
+  console.log("the result:")
+  console.log(JSON.stringify(result, null, 2));
   return result;
 }
 
@@ -129,11 +147,15 @@ async function awaitStabilization (page) {
   });
 }
 
-async function runNetworkPattern(client, pattern) {
+async function runNetworkPattern(client, pattern, page) {
   for await (const profile of pattern) {
     console.log(
       `Setting network speed to ${profile.speed}kbps for ${profile.duration} seconds`
     );
+    const logMessage = `Setting network speed to ${profile.speed}kbps for ${profile.duration} seconds`;
+    await page.evaluate(msg => {
+      console.log(msg);
+    }, logMessage);
     setNetworkSpeedInMbps(client, profile.speed);
     await new Promise(resolve => setTimeout(resolve, profile.duration * 1000));
   }

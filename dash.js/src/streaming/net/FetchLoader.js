@@ -138,6 +138,7 @@ function FetchLoader(cfg) {
             httpRequest.reader = response.body.getReader();
             let StartTimeData = [];
             let EndTimeData = [];
+            let downloadedData = [];
 
             const processResult = function ({ value, done }) { // Bug fix Parse whenever data is coming [value] better than 1ms looking that increase CPU
                 if (done) {
@@ -151,6 +152,8 @@ function FetchLoader(cfg) {
                             total: isNaN(totalBytes) ? bytesReceived : totalBytes,
                             lengthComputable: true,
                             time: calculateDownloadedTime(StartTimeData, EndTimeData),
+                            //throughput: calculateThroughputByImprovedChunked(downloadedData, bytesReceived), //calculateThroughputByChunkData(StartTimeData, EndTimeData),
+                            // throughput: 0,
                             throughput: calculateThroughputByChunkData(StartTimeData, EndTimeData),
                             stream: true
                         });
@@ -163,6 +166,10 @@ function FetchLoader(cfg) {
                 }
 
                 if (value && value.length > 0 ) {
+                    downloadedData.push({
+                        ts: Date.now(),
+                        bytes: value.length
+                    });
                     remaining = concatTypedArray(remaining, value);
                     bytesReceived += value.length;
                     // Parse the payload and capture the the 'moof' box
@@ -290,6 +297,39 @@ function FetchLoader(cfg) {
         }
     }
 
+        // Compute the download time of a http chunk
+        function calculateThroughputByHttpData(downloadedData, bytesReceived) {
+            try {
+                if (downloadedData.length > 1) {
+                    let totalTime = downloadedData[downloadedData.length - 1].ts - downloadedData[0].ts;
+                    console.log("tp:"+((8*bytesReceived)/totalTime));
+                    return (8 * bytesReceived) / totalTime;
+                }
+                return null;
+            } catch (e) {
+                return null;
+            }
+        }
+
+
+        // Compute the download time of a http chunk
+        function calculateThroughputByImprovedChunked(downloadedData, bytesReceived) {
+            try {
+                if (downloadedData.length > 1) {
+                    let totalTime = downloadedData[downloadedData.length - 1].ts - downloadedData[0].ts;
+                    let totalBytes = 0;
+                    for(let i = 1; i < downloadedData.length; i++){
+                        totalBytes += downloadedData[i].bytes;
+                    }
+                    console.log("improved chunked:"+((8*totalBytes)/totalTime));
+                    return (8 * totalBytes) / totalTime;
+                }
+                return null;
+            } catch (e) {
+                return null;
+            }
+        }
+
     function calculateThroughputByChunkData(startTimeData, endTimeData) {
         try {
             let datum, datumE;
@@ -325,6 +365,7 @@ function FetchLoader(cfg) {
 
                 if (chunkThroughputs.length > 0) {
                     const sumOfChunkThroughputs = chunkThroughputs.reduce((a, b) => a + b, 0);
+                    console.log("chunked:"+sumOfChunkThroughputs / chunkThroughputs.length);
                     return sumOfChunkThroughputs / chunkThroughputs.length;
                 }
             }

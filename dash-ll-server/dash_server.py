@@ -260,6 +260,7 @@ class DashRequestHandler(hs.BaseHTTPRequestHandler):
                 return self.send_error(HTTPStatus.BAD_REQUEST)
 
             outpath    = '%s%s' % (self.server.serve_dir, local_path)
+            print("outpath: "+outpath)
             write_path = outpath + '.tmp'
             outfile    = stack.enter_context(open(write_path, 'wb'))
             while True:
@@ -278,6 +279,7 @@ class DashRequestHandler(hs.BaseHTTPRequestHandler):
 
             retcode = HTTPStatus.NO_CONTENT if os.path.exists(outpath) else HTTPStatus.CREATED
             os.replace(write_path, outpath)
+            shutil.copyfile(write_path, outpath)
 
         self.send_response(retcode)
         self.send_header('Content-Length', '0')
@@ -323,7 +325,7 @@ class DashServer(hs.ThreadingHTTPServer):
 def main(argv):
     parser = argparse.ArgumentParser('DASH server')
 
-    parser.add_argument('-a', '--address', default = 'localhost')
+    parser.add_argument('-a', '--address', default = '0.0.0.0')
     parser.add_argument('-p', '--port',    type = int, default = 8000)
 
     group = parser.add_mutually_exclusive_group()
@@ -341,6 +343,7 @@ def main(argv):
 
     server = DashServer((args.address, args.port), args.ipv4, args.ipv6,
                         args.directory, logger)
+    print(f'Serving on {args.address}:{args.port}')
     server.serve_forever()
 
 if __name__ == '__main__':

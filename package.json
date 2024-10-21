@@ -7,7 +7,11 @@
     "puppeteer": "^2.1.1",
     "puppeteer-core": "^2.1.1"
   },
-  "devDependencies": {},
+  "devDependencies": {
+    "grunt": "^1.6.1",
+    "load-grunt-tasks": "^5.1.0",
+    "time-grunt": "^2.0.0"
+  },
   "config": {
     "ffmpeg_profile": "PROFILE_NORMAL",
     "network_profile": "PROFILE_CASCADE"

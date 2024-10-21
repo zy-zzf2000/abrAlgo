@@ -18,6 +18,8 @@ function TgcLearningRuleClass() {
     let context = this.context;
     let instance;
 
+    let lastBitRate = 0;
+
     let metricsConstants = {
         ABANDON_LOAD: 'abandonload',
         BUFFER_STATE: 'BufferState'
@@ -45,6 +47,7 @@ function TgcLearningRuleClass() {
 
         // Additional stuff for Learning rule
         let current = abrController.getQualityFor(mediaType, streamController.getActiveStreamInfo());
+        console.log('current quality index: ', current);
 
         // Additional stuff for both
         const mediaInfo = rulesContext.getMediaInfo();
@@ -96,7 +99,14 @@ function TgcLearningRuleClass() {
         let currentQoeInfo = qoeEvaluator.getPerSegmentQoe();
         let currentTotalQoe = currentQoeInfo.totalQoe;
         // console.log("QoE: ",currentTotalQoe);
-
+        // console.log('qoe info:',JSON.stringify(currentQoeInfo));
+        // console.log('current BitRateKbps: ', currentBitrateKbps);
+        // console.log('last BitRateKbps: ', self.lastBitRate);
+        // console.log('segmentRebufferTime: ', segmentRebufferTime);
+        // console.log('latency: ', latency);
+        let QoE = 2*(Math.log(currentBitrateKbps)/Math.log(200)) - 2.66 * (segmentRebufferTime) - Math.abs(currentBitrateKbps-self.lastBitRate)/1000 - latency;
+        self.lastBitRate = currentBitrateKbps;
+        console.log('QoE: ',QoE);
 
         /*
         * Dynamic Weights Selector (step 1/2: initialization)

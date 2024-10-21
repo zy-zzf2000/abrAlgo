@@ -383,6 +383,7 @@ function BolaRule(config) {
     }
 
     function getMaxIndex(rulesContext) {
+        console.log('using BolaRule');
         const switchRequest = SwitchRequest(context).create();
 
         if (!rulesContext || !rulesContext.hasOwnProperty('getMediaInfo') || !rulesContext.hasOwnProperty('getMediaType') ||
