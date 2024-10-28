@@ -28,94 +28,155 @@
  *  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  *  POSSIBILITY OF SUCH DAMAGE.
  */
-import ErrorsBase from './ErrorsBase';
+import ErrorsBase from './ErrorsBase.js';
+
 /**
  * Errors declaration
  * @class
  */
 class Errors extends ErrorsBase {
-    constructor () {
+    constructor() {
         super();
+
         /**
          * Error code returned when a manifest parsing error occurs
          */
         this.MANIFEST_LOADER_PARSING_FAILURE_ERROR_CODE = 10;
+
         /**
          * Error code returned when a manifest loading error occurs
          */
         this.MANIFEST_LOADER_LOADING_FAILURE_ERROR_CODE = 11;
+
         /**
          * Error code returned when a xlink loading error occurs
          */
         this.XLINK_LOADER_LOADING_FAILURE_ERROR_CODE = 12;
+
         /**
-         * Error code returned when the update of segments list has failed
+         * Error code returned when no segment ranges could be determined from the sidx box
          */
-        this.SEGMENTS_UPDATE_FAILED_ERROR_CODE = 13;
-        this.SEGMENTS_UNAVAILABLE_ERROR_CODE = 14;
         this.SEGMENT_BASE_LOADER_ERROR_CODE = 15;
+
+        /**
+         * Error code returned when the time synchronization failed
+         */
         this.TIME_SYNC_FAILED_ERROR_CODE = 16;
+
+        /**
+         * Error code returned when loading a fragment failed
+         */
         this.FRAGMENT_LOADER_LOADING_FAILURE_ERROR_CODE = 17;
+
+        /**
+         * Error code returned when the FragmentLoader did not receive a request object
+         */
         this.FRAGMENT_LOADER_NULL_REQUEST_ERROR_CODE = 18;
+
+        /**
+         * Error code returned when the BaseUrl resolution failed
+         */
         this.URL_RESOLUTION_FAILED_GENERIC_ERROR_CODE = 19;
+
+        /**
+         * Error code returned when the append operation in the SourceBuffer failed
+         */
         this.APPEND_ERROR_CODE = 20;
+
+        /**
+         * Error code returned when the remove operation in the SourceBuffer failed
+         */
         this.REMOVE_ERROR_CODE = 21;
+
+        /**
+         * Error code returned when updating the internal objects after loading an MPD failed
+         */
         this.DATA_UPDATE_FAILED_ERROR_CODE = 22;
+
         /**
          * Error code returned when MediaSource is not supported by the browser
          */
         this.CAPABILITY_MEDIASOURCE_ERROR_CODE = 23;
+
         /**
          * Error code returned when Protected contents are not supported
          */
-        this.CAPABILITY_MEDIAKEYS_ERROR_CODE   = 24;
+        this.CAPABILITY_MEDIAKEYS_ERROR_CODE = 24;
 
-        this.DOWNLOAD_ERROR_ID_MANIFEST_CODE   = 25;
+        /**
+         * Error code returned when loading the manifest failed
+         */
+        this.DOWNLOAD_ERROR_ID_MANIFEST_CODE = 25;
 
-        this.DOWNLOAD_ERROR_ID_SIDX_CODE            = 26;
-        this.DOWNLOAD_ERROR_ID_CONTENT_CODE         = 27;
+        /**
+         * Error code returned when loading the sidx failed
+         */
+        this.DOWNLOAD_ERROR_ID_SIDX_CODE = 26;
 
-        this.DOWNLOAD_ERROR_ID_INITIALIZATION_CODE  = 28;
+        /**
+         * Error code returned when loading the media content failed
+         */
+        this.DOWNLOAD_ERROR_ID_CONTENT_CODE = 27;
 
-        this.DOWNLOAD_ERROR_ID_XLINK_CODE           = 29;
+        /**
+         * Error code returned when loading the init segment failed
+         */
+        this.DOWNLOAD_ERROR_ID_INITIALIZATION_CODE = 28;
 
-        this.MANIFEST_ERROR_ID_CODEC_CODE           = 30;
-        this.MANIFEST_ERROR_ID_PARSE_CODE           = 31;
+        /**
+         * Error code returned when loading the XLink content failed
+         */
+        this.DOWNLOAD_ERROR_ID_XLINK_CODE = 29;
+
+        /**
+         * Error code returned when parsing the MPD resulted in a logical error
+         */
+        this.MANIFEST_ERROR_ID_PARSE_CODE = 31;
 
         /**
          * Error code returned when no stream (period) has been detected in the manifest
          */
-        this.MANIFEST_ERROR_ID_NOSTREAMS_CODE       = 32;
+        this.MANIFEST_ERROR_ID_NOSTREAMS_CODE = 32;
+
         /**
-         * Error code returned when something wrong has append during subtitles parsing (TTML or VTT)
+         * Error code returned when something wrong has happened during parsing and appending subtitles (TTML or VTT)
          */
-        this.TIMED_TEXT_ERROR_ID_PARSE_CODE         = 33;
+        this.TIMED_TEXT_ERROR_ID_PARSE_CODE = 33;
+
         /**
          * Error code returned when a 'muxed' media type has been detected in the manifest. This type is not supported
          */
-        this.MANIFEST_ERROR_ID_MULTIPLEXED_CODE     = 34;
+
+        this.MANIFEST_ERROR_ID_MULTIPLEXED_CODE = 34;
+
         /**
          * Error code returned when a media source type is not supported
          */
         this.MEDIASOURCE_TYPE_UNSUPPORTED_CODE = 35;
+
+        /**
+         * Error code returned when the available Adaptation Sets can not be selected because the corresponding key ids have an invalid key status
+         * @type {number}
+         */
+        this.NO_SUPPORTED_KEY_IDS = 36;
 
         this.MANIFEST_LOADER_PARSING_FAILURE_ERROR_MESSAGE = 'parsing failed for ';
         this.MANIFEST_LOADER_LOADING_FAILURE_ERROR_MESSAGE = 'Failed loading manifest: ';
         this.XLINK_LOADER_LOADING_FAILURE_ERROR_MESSAGE = 'Failed loading Xlink element: ';
         this.SEGMENTS_UPDATE_FAILED_ERROR_MESSAGE = 'Segments update failed';
         this.SEGMENTS_UNAVAILABLE_ERROR_MESSAGE = 'no segments are available yet';
-        this.SEGMENT_BASE_LOADER_ERROR_MESSAGE = 'error loading segments';
-        this.TIME_SYNC_FAILED_ERROR_MESSAGE = 'Failed to synchronize time';
+        this.SEGMENT_BASE_LOADER_ERROR_MESSAGE = 'error loading segment ranges from sidx';
+        this.TIME_SYNC_FAILED_ERROR_MESSAGE = 'Failed to synchronize client and server time';
         this.FRAGMENT_LOADER_NULL_REQUEST_ERROR_MESSAGE = 'request is null';
         this.URL_RESOLUTION_FAILED_GENERIC_ERROR_MESSAGE = 'Failed to resolve a valid URL';
         this.APPEND_ERROR_MESSAGE = 'chunk is not defined';
-        this.REMOVE_ERROR_MESSAGE = 'buffer is not defined';
+        this.REMOVE_ERROR_MESSAGE = 'Removing data from the SourceBuffer';
         this.DATA_UPDATE_FAILED_ERROR_MESSAGE = 'Data update failed';
-
         this.CAPABILITY_MEDIASOURCE_ERROR_MESSAGE = 'mediasource is not supported';
         this.CAPABILITY_MEDIAKEYS_ERROR_MESSAGE = 'mediakeys is not supported';
         this.TIMED_TEXT_ERROR_MESSAGE_PARSE = 'parsing error :';
         this.MEDIASOURCE_TYPE_UNSUPPORTED_MESSAGE = 'Error creating source buffer of type : ';
+        this.NO_SUPPORTED_KEY_IDS_MESSAGE = 'All possible Adaptation Sets have an invalid key status';
     }
 }
 

@@ -28,23 +28,34 @@
  *  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  *  POSSIBILITY OF SUCH DAMAGE.
  */
-import Constants from '../constants/Constants';
-import { HTTPRequest } from '../vo/metrics/HTTPRequest';
-import TextTrackInfo from '../vo/TextTrackInfo';
-import BoxParser from '../utils/BoxParser';
-import CustomTimeRanges from '../utils/CustomTimeRanges';
-import FactoryMaker from '../../core/FactoryMaker';
-import Debug from '../../core/Debug';
-import TextTracks from './TextTracks';
-import EmbeddedTextHtmlRender from './EmbeddedTextHtmlRender';
+import Constants from '../constants/Constants.js';
+import {HTTPRequest} from '../vo/metrics/HTTPRequest.js';
+import TextTrackInfo from '../vo/TextTrackInfo.js';
+import BoxParser from '../utils/BoxParser.js';
+import CustomTimeRanges from '../utils/CustomTimeRanges.js';
+import FactoryMaker from '../../core/FactoryMaker.js';
+import Debug from '../../core/Debug.js';
+import EmbeddedTextHtmlRender from './EmbeddedTextHtmlRender.js';
 import ISOBoxer from 'codem-isoboxer';
-import cea608parser from '../../../externals/cea608-parser';
-import EventBus from '../../core/EventBus';
-import Events from '../../core/events/Events';
-import DashJSError from '../vo/DashJSError';
-import Errors from '../../core/errors/Errors';
+import EventBus from '../../core/EventBus.js';
+import Events from '../../core/events/Events.js';
+import DashJSError from '../vo/DashJSError.js';
+import Errors from '../../core/errors/Errors.js';
+import {Cta608Parser} from '@svta/common-media-library/cta/608/Cta608Parser';
+import {extractCta608DataFromSample} from '@svta/common-media-library/cta/608/extractCta608DataFromSample';
+import DashConstants from '../../dash/constants/DashConstants.js';
 
-function TextSourceBuffer() {
+function TextSourceBuffer(config) {
+    const errHandler = config.errHandler;
+    const manifestModel = config.manifestModel;
+    const mediaController = config.mediaController;
+    const videoModel = config.videoModel;
+    const textTracks = config.textTracks;
+    const vttParser = config.vttParser;
+    const vttCustomRenderingParser = config.vttCustomRenderingParser;
+    const ttmlParser = config.ttmlParser;
+    const streamInfo = config.streamInfo;
+    const settings = config.settings;
 
     const context = this.context;
     const eventBus = EventBus(context).getInstance();
@@ -53,38 +64,34 @@ function TextSourceBuffer() {
     let instance,
         logger,
         boxParser,
-        errHandler,
-        adapter,
-        manifestModel,
-        mediaController,
         parser,
-        vttParser,
-        ttmlParser,
         mediaInfos,
-        textTracks,
-        fragmentedFragmentModel,
+        fragmentModel,
         initializationSegmentReceived,
         timescale,
         fragmentedTracks,
-        videoModel,
-        streamController,
         firstFragmentedSubtitleStart,
         currFragmentedTrackIdx,
         embeddedTracks,
         embeddedTimescale,
         embeddedLastSequenceNumber,
+        lastChunkEnd,
         embeddedCea608FieldParsers,
-        embeddedTextHtmlRender,
-        mseTimeOffset;
+        embeddedTextHtmlRender;
 
     function setup() {
         logger = Debug(context).getInstance().getLogger(instance);
+        boxParser = BoxParser(context).getInstance();
 
         resetInitialSettings();
     }
 
-    function resetFragmented () {
-        fragmentedFragmentModel = null;
+    function getStreamId() {
+        return streamInfo.id;
+    }
+
+    function _resetFragmented() {
+        fragmentModel = null;
         timescale = NaN;
         fragmentedTracks = [];
         firstFragmentedSubtitleStart = null;
@@ -92,106 +99,111 @@ function TextSourceBuffer() {
     }
 
     function resetInitialSettings() {
-        resetFragmented();
+        _resetFragmented();
 
         mediaInfos = [];
         parser = null;
     }
 
-    function initialize(mimeType, streamProcessor) {
+    function initialize() {
+
         if (!embeddedInitialized) {
-            initEmbedded();
+            _initEmbedded();
         }
 
-        textTracks.setConfig({
-            videoModel: videoModel
-        });
-        textTracks.initialize();
-
-        if (!boxParser) {
-            boxParser = BoxParser(context).getInstance();
-        }
-
-        addMediaInfos(mimeType, streamProcessor);
     }
 
-    function addMediaInfos(mimeType, streamProcessor) {
-        const isFragmented = !adapter.getIsTextTrack(mimeType);
-        if (streamProcessor) {
-            mediaInfos = mediaInfos.concat(streamProcessor.getMediaInfoArr());
+    /**
+     * There might be media infos of different types. For instance text and fragmentedText.
+     * @param {string} type
+     * @param {array} mInfos
+     * @param {object} fModel
+     */
+    function addMediaInfos(type, mInfos, fModel) {
 
-            if (isFragmented) {
-                fragmentedFragmentModel = streamProcessor.getFragmentModel();
-                instance.buffered = CustomTimeRanges(context).create();
-                fragmentedTracks = mediaController.getTracksFor(Constants.FRAGMENTED_TEXT, streamProcessor.getStreamInfo());
-                const currFragTrack = mediaController.getCurrentTrackFor(Constants.FRAGMENTED_TEXT, streamProcessor.getStreamInfo());
-                for (let i = 0; i < fragmentedTracks.length; i++) {
-                    if (fragmentedTracks[i] === currFragTrack) {
-                        setCurrentFragmentedTrackIdx(i);
-                        break;
-                    }
+        mediaInfos = mediaInfos.concat(mInfos);
+
+        if (type === Constants.TEXT && mInfos[0].isFragmented && !mInfos[0].isEmbedded) {
+            fragmentModel = fModel;
+            instance.buffered = CustomTimeRanges(context).create();
+            fragmentedTracks = mediaController.getTracksFor(Constants.TEXT, streamInfo.id).filter(track => track.isFragmented);
+            const currFragTrack = mediaController.getCurrentTrackFor(Constants.TEXT, streamInfo.id);
+            for (let i = 0; i < fragmentedTracks.length; i++) {
+                if (fragmentedTracks[i] === currFragTrack) {
+                    setCurrentFragmentedTrackIdx(i);
+                    break;
                 }
             }
-
-            for (let i = 0; i < mediaInfos.length; i++) {
-                createTextTrackFromMediaInfo(null, mediaInfos[i]);
-            }
         }
+
+        for (let i = 0; i < mInfos.length; i++) {
+            _createTextTrackInfoFromMediaInfo(mInfos[i]);
+        }
+
+    }
+
+    /**
+     * Create a new track based on the mediaInfo information
+     * @param {object} mediaInfo
+     * @private
+     */
+    function _createTextTrackInfoFromMediaInfo(mediaInfo) {
+
+        // We are mapping DASH specification strings to the ones of the HTML specification.
+        // See also https://html.spec.whatwg.org/multipage/media.html#text-track-kind
+        const trackKindMap = {};
+        trackKindMap[DashConstants.SUBTITLE] = 'subtitles'
+        trackKindMap[DashConstants.CAPTION] = 'captions'
+        trackKindMap[DashConstants.FORCED_SUBTITLE] = 'subtitles'
+
+        const textTrackInfo = new TextTrackInfo();
+
+        for (let key in mediaInfo) {
+            textTrackInfo[key] = mediaInfo[key];
+        }
+
+        textTrackInfo.defaultTrack = getIsDefault(mediaInfo);
+        textTrackInfo.isTTML = _checkTtml(mediaInfo);
+        textTrackInfo.kind = _getKind(mediaInfo, trackKindMap);
+
+        textTracks.addTextTrackInfo(textTrackInfo);
     }
 
     function abort() {
-        textTracks.deleteAllTextTracks();
-        resetFragmented();
-        boxParser = null;
-        mediaInfos = [];
     }
 
     function reset() {
         resetInitialSettings();
 
-        streamController = null;
-        videoModel = null;
-        textTracks = null;
+        mediaInfos = [];
+        boxParser = null;
     }
 
-    function onVideoChunkReceived(e) {
+    function _onVideoChunkReceived(e) {
         const chunk = e.chunk;
 
-        if (chunk.mediaInfo.embeddedCaptions) {
+        if (chunk.representation.mediaInfo.embeddedCaptions) {
             append(chunk.bytes, chunk);
         }
     }
 
-    function initEmbedded() {
+    function _initEmbedded() {
         embeddedTracks = [];
-        textTracks = TextTracks(context).getInstance();
-        textTracks.setConfig({
-            videoModel: videoModel
-        });
-        textTracks.initialize();
-        boxParser = BoxParser(context).getInstance();
         currFragmentedTrackIdx = null;
         embeddedTimescale = 0;
         embeddedCea608FieldParsers = [];
         embeddedLastSequenceNumber = null;
+        lastChunkEnd = null;
         embeddedInitialized = true;
         embeddedTextHtmlRender = EmbeddedTextHtmlRender(context).getInstance();
 
-        const streamProcessors = streamController.getActiveStreamProcessors();
-        for (const i in streamProcessors) {
-            if (streamProcessors[i].getType() === 'video') {
-                mseTimeOffset = streamProcessors[i].getRepresentationInfo().MSETimeOffset;
-                break;
-            }
-        }
-
-        eventBus.on(Events.VIDEO_CHUNK_RECEIVED, onVideoChunkReceived, this);
-        eventBus.on(Events.BUFFER_CLEARED, onVideoBufferCleared, this);
+        eventBus.on(Events.VIDEO_CHUNK_RECEIVED, _onVideoChunkReceived, instance);
+        eventBus.on(Events.BUFFER_CLEARED, onVideoBufferCleared, instance);
     }
 
     function resetEmbedded() {
-        eventBus.off(Events.VIDEO_CHUNK_RECEIVED, onVideoChunkReceived, this);
-        eventBus.off(Events.BUFFER_CLEARED, onVideoBufferCleared, this);
+        eventBus.off(Events.VIDEO_CHUNK_RECEIVED, _onVideoChunkReceived, instance);
+        eventBus.off(Events.BUFFER_CLEARED, onVideoBufferCleared, instance);
         if (textTracks) {
             textTracks.deleteAllTextTracks();
         }
@@ -199,12 +211,15 @@ function TextSourceBuffer() {
         embeddedTracks = [];
         embeddedCea608FieldParsers = [null, null];
         embeddedLastSequenceNumber = null;
+        lastChunkEnd = null;
     }
 
     function addEmbeddedTrack(mediaInfo) {
+
         if (!embeddedInitialized) {
-            initEmbedded();
+            return;
         }
+
         if (mediaInfo) {
             if (mediaInfo.id === Constants.CC1 || mediaInfo.id === Constants.CC3) {
                 for (let i = 0; i < embeddedTracks.length; i++) {
@@ -219,42 +234,9 @@ function TextSourceBuffer() {
         }
     }
 
-    function setConfig(config) {
-        if (!config) {
-            return;
-        }
-        if (config.errHandler) {
-            errHandler = config.errHandler;
-        }
-        if (config.adapter) {
-            adapter = config.adapter;
-        }
-        if (config.manifestModel) {
-            manifestModel = config.manifestModel;
-        }
-        if (config.mediaController) {
-            mediaController = config.mediaController;
-        }
-        if (config.videoModel) {
-            videoModel = config.videoModel;
-        }
-        if (config.streamController) {
-            streamController = config.streamController;
-        }
-        if (config.textTracks) {
-            textTracks = config.textTracks;
-        }
-        if (config.vttParser) {
-            vttParser = config.vttParser;
-        }
-        if (config.ttmlParser) {
-            ttmlParser = config.ttmlParser;
-        }
-    }
-
     function getConfig() {
         const config = {
-            fragmentModel: fragmentedFragmentModel,
+            fragmentModel: fragmentModel,
             fragmentedTracks: fragmentedTracks,
             videoModel: videoModel
         };
@@ -266,245 +248,293 @@ function TextSourceBuffer() {
         currFragmentedTrackIdx = idx;
     }
 
-    function createTextTrackFromMediaInfo(captionData, mediaInfo) {
-        const textTrackInfo = new TextTrackInfo();
-        const trackKindMap = { subtitle: 'subtitles', caption: 'captions' }; //Dash Spec has no "s" on end of KIND but HTML needs plural.
-        const getKind = function () {
-            let kind = (mediaInfo.roles.length > 0) ? trackKindMap[mediaInfo.roles[0]] : trackKindMap.caption;
-            kind = (kind === trackKindMap.caption || kind === trackKindMap.subtitle) ? kind : trackKindMap.caption;
-            return kind;
-        };
+    function _checkTtml(mediaInfo) {
+        return (mediaInfo.codec && mediaInfo.codec.search(Constants.STPP) >= 0) || (mediaInfo.mimeType && mediaInfo.mimeType.search(Constants.TTML) >= 0);
+    }
 
-        const checkTTML = function () {
-            let ttml = false;
-            if (mediaInfo.codec && mediaInfo.codec.search(Constants.STPP) >= 0) {
-                ttml = true;
-            }
-            if (mediaInfo.mimeType && mediaInfo.mimeType.search(Constants.TTML) >= 0) {
-                ttml = true;
-            }
-            return ttml;
-        };
+    function _getKind(mediaInfo, trackKindMap) {
+        let kind = (mediaInfo.roles && mediaInfo.roles.length > 0) ? trackKindMap[mediaInfo.roles[0].value] : trackKindMap.caption;
 
-        textTrackInfo.captionData = captionData;
-        textTrackInfo.lang = mediaInfo.lang;
-        textTrackInfo.labels = mediaInfo.labels;
-        textTrackInfo.id = mediaInfo.id ? mediaInfo.id : mediaInfo.index; // AdaptationSet id (an unsigned int) as it's optional parameter, use mediaInfo.index
-        textTrackInfo.index = mediaInfo.index; // AdaptationSet index in manifest
-        textTrackInfo.isTTML = checkTTML();
-        textTrackInfo.defaultTrack = getIsDefault(mediaInfo);
-        textTrackInfo.isFragmented = !adapter.getIsTextTrack(mediaInfo.mimeType);
-        textTrackInfo.isEmbedded = mediaInfo.isEmbedded ? true : false;
-        textTrackInfo.kind = getKind();
-        textTrackInfo.roles = mediaInfo.roles;
-        textTrackInfo.accessibility = mediaInfo.accessibility;
-        const totalNrTracks = (mediaInfos ? mediaInfos.length : 0) + embeddedTracks.length;
-        textTracks.addTextTrack(textTrackInfo, totalNrTracks);
+        kind = Object.values(trackKindMap).includes(kind) ? kind : trackKindMap.caption;
+
+        return kind;
     }
 
     function append(bytes, chunk) {
-        let result,
-            sampleList,
-            i, j, k,
-            samplesInfo,
-            ccContent;
-        const mediaInfo = chunk.mediaInfo;
+        const mediaInfo = chunk.representation.mediaInfo;
         const mediaType = mediaInfo.type;
         const mimeType = mediaInfo.mimeType;
         const codecType = mediaInfo.codec || mimeType;
+
         if (!codecType) {
             logger.error('No text type defined');
             return;
         }
 
-        if (mediaType === Constants.FRAGMENTED_TEXT) {
-            if (!initializationSegmentReceived && chunk.segmentType === 'InitializationSegment') {
-                initializationSegmentReceived = true;
-                timescale = boxParser.getMediaTimescaleFromMoov(bytes);
+        if (mediaInfo.codec.indexOf('application/mp4') !== -1) {
+            _appendFragmentedText(bytes, chunk, codecType);
+        } else if (mediaType === Constants.VIDEO) {
+            _appendEmbeddedText(bytes, chunk);
+        } else {
+            _appendText(bytes, chunk, codecType);
+        }
+    }
+
+    function _appendFragmentedText(bytes, chunk, codecType) {
+        let sampleList,
+            samplesInfo;
+
+        if (chunk.segmentType === 'InitializationSegment') {
+            initializationSegmentReceived = true;
+            timescale = boxParser.getMediaTimescaleFromMoov(bytes);
+        } else {
+            if (!initializationSegmentReceived) {
+                return;
+            }
+            samplesInfo = boxParser.getSamplesInfo(bytes);
+            sampleList = samplesInfo.sampleList;
+            if (sampleList.length > 0) {
+                firstFragmentedSubtitleStart = sampleList[0].cts - chunk.start * timescale;
+            }
+
+            if (codecType.search(Constants.STPP) >= 0) {
+                _appendFragmentedSttp(bytes, sampleList, codecType);
             } else {
-                if (!initializationSegmentReceived) {
-                    return;
-                }
-                samplesInfo = boxParser.getSamplesInfo(bytes);
-                sampleList = samplesInfo.sampleList;
-                if (firstFragmentedSubtitleStart === null && sampleList.length > 0) {
-                    firstFragmentedSubtitleStart = sampleList[0].cts - chunk.start * timescale;
-                }
-                if (codecType.search(Constants.STPP) >= 0) {
-                    parser = parser !== null ? parser : getParser(codecType);
-                    for (i = 0; i < sampleList.length; i++) {
-                        const sample = sampleList[i];
-                        const sampleStart = sample.cts;
-                        const sampleRelStart = sampleStart - firstFragmentedSubtitleStart;
-                        this.buffered.add(sampleRelStart / timescale, (sampleRelStart + sample.duration) / timescale);
-                        const dataView = new DataView(bytes, sample.offset, sample.subSizes[0]);
-                        ccContent = ISOBoxer.Utils.dataViewToString(dataView, Constants.UTF8);
-                        const images = [];
-                        let subOffset = sample.offset + sample.subSizes[0];
-                        for (j = 1; j < sample.subSizes.length; j++) {
-                            const inData = new Uint8Array(bytes, subOffset, sample.subSizes[j]);
-                            const raw = String.fromCharCode.apply(null, inData);
-                            images.push(raw);
-                            subOffset += sample.subSizes[j];
-                        }
-                        try {
-                            // Only used for Miscrosoft Smooth Streaming support - caption time is relative to sample time. In this case, we apply an offset.
-                            const manifest = manifestModel.getValue();
-                            const offsetTime = manifest.ttmlTimeIsRelative ? sampleStart / timescale : 0;
-                            result = parser.parse(ccContent, offsetTime, sampleStart / timescale, (sampleStart + sample.duration) / timescale, images);
-                            textTracks.addCaptions(currFragmentedTrackIdx, firstFragmentedSubtitleStart / timescale, result);
-                        } catch (e) {
-                            fragmentedFragmentModel.removeExecutedRequestsBeforeTime();
-                            this.remove();
-                            logger.error('TTML parser error: ' + e.message);
-                        }
-                    }
-                } else {
-                    // WebVTT case
-                    const captionArray = [];
-                    for (i = 0 ; i < sampleList.length; i++) {
-                        const sample = sampleList[i];
-                        sample.cts -= firstFragmentedSubtitleStart;
-                        this.buffered.add(sample.cts / timescale, (sample.cts + sample.duration) / timescale);
-                        const sampleData = bytes.slice(sample.offset, sample.offset + sample.size);
-                        // There are boxes inside the sampleData, so we need a ISOBoxer to get at it.
-                        const sampleBoxes = ISOBoxer.parseBuffer(sampleData);
-
-                        for (j = 0 ; j < sampleBoxes.boxes.length; j++) {
-                            const box1 = sampleBoxes.boxes[j];
-                            logger.debug('VTT box1: ' + box1.type);
-                            if (box1.type === 'vtte') {
-                                continue; //Empty box
-                            }
-                            if (box1.type === 'vttc') {
-                                logger.debug('VTT vttc boxes.length = ' + box1.boxes.length);
-                                for (k = 0 ; k < box1.boxes.length; k++) {
-                                    const box2 = box1.boxes[k];
-                                    logger.debug('VTT box2: ' + box2.type);
-                                    if (box2.type === 'payl') {
-                                        const cue_text = box2.cue_text;
-                                        logger.debug('VTT cue_text = ' + cue_text);
-                                        const start_time = sample.cts / timescale;
-                                        const end_time = (sample.cts + sample.duration) / timescale;
-                                        captionArray.push({
-                                            start: start_time,
-                                            end: end_time,
-                                            data: cue_text,
-                                            styles: {}
-                                        });
-                                        logger.debug('VTT ' + start_time + '-' + end_time + ' : ' + cue_text);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if (captionArray.length > 0) {
-                        textTracks.addCaptions(currFragmentedTrackIdx, 0, captionArray);
-                    }
-                }
-            }
-        } else if (mediaType === Constants.TEXT) {
-            const dataView = new DataView(bytes, 0, bytes.byteLength);
-            ccContent = ISOBoxer.Utils.dataViewToString(dataView, Constants.UTF8);
-
-            try {
-                result = getParser(codecType).parse(ccContent, 0);
-                textTracks.addCaptions(textTracks.getCurrentTrackIdx(), 0, result);
-            } catch (e) {
-                errHandler.error(new DashJSError(Errors.TIMED_TEXT_ERROR_ID_PARSE_CODE, Errors.TIMED_TEXT_ERROR_MESSAGE_PARSE + e.message, ccContent));
-            }
-        } else if (mediaType === Constants.VIDEO) { //embedded text
-            if (chunk.segmentType === HTTPRequest.INIT_SEGMENT_TYPE) {
-                if (embeddedTimescale === 0) {
-                    embeddedTimescale = boxParser.getMediaTimescaleFromMoov(bytes);
-                    for (i = 0; i < embeddedTracks.length; i++) {
-                        createTextTrackFromMediaInfo(null, embeddedTracks[i]);
-                    }
-                }
-            } else { // MediaSegment
-                if (embeddedTimescale === 0) {
-                    logger.warn('CEA-608: No timescale for embeddedTextTrack yet');
-                    return;
-                }
-                const makeCueAdderForIndex = function (self, trackIndex) {
-                    function newCue(startTime, endTime, captionScreen) {
-                        let captionsArray = null;
-                        if (videoModel.getTTMLRenderingDiv()) {
-                            captionsArray = embeddedTextHtmlRender.createHTMLCaptionsFromScreen(videoModel.getElement(), startTime, endTime, captionScreen);
-                        } else {
-                            const text = captionScreen.getDisplayText();
-                            captionsArray = [{
-                                start: startTime,
-                                end: endTime,
-                                data: text,
-                                styles: {}
-                            }];
-                        }
-                        if (captionsArray) {
-                            textTracks.addCaptions(trackIndex, 0, captionsArray);
-                        }
-                    }
-                    return newCue;
-                };
-
-                samplesInfo = boxParser.getSamplesInfo(bytes);
-
-                const sequenceNumber = samplesInfo.lastSequenceNumber;
-
-                if (!embeddedCea608FieldParsers[0] && !embeddedCea608FieldParsers[1]) {
-                    // Time to setup the CEA-608 parsing
-                    let field, handler, trackIdx;
-                    for (i = 0; i < embeddedTracks.length; i++) {
-                        if (embeddedTracks[i].id === Constants.CC1) {
-                            field = 0;
-                            trackIdx = textTracks.getTrackIdxForId(Constants.CC1);
-                        } else if (embeddedTracks[i].id === Constants.CC3) {
-                            field = 1;
-                            trackIdx = textTracks.getTrackIdxForId(Constants.CC3);
-                        }
-                        if (trackIdx === -1) {
-                            logger.warn('CEA-608: data before track is ready.');
-                            return;
-                        }
-                        handler = makeCueAdderForIndex(this, trackIdx);
-                        embeddedCea608FieldParsers[i] = new cea608parser.Cea608Parser(i + 1, {
-                            'newCue': handler
-                        }, null);
-                    }
-                }
-
-                if (embeddedTimescale) {
-                    if (embeddedLastSequenceNumber !== null && sequenceNumber !== embeddedLastSequenceNumber + samplesInfo.numSequences) {
-                        for (i = 0; i < embeddedCea608FieldParsers.length; i++) {
-                            if (embeddedCea608FieldParsers[i]) {
-                                embeddedCea608FieldParsers[i].reset();
-                            }
-                        }
-                    }
-
-                    const allCcData = extractCea608Data(bytes, samplesInfo.sampleList);
-
-                    for (let fieldNr = 0; fieldNr < embeddedCea608FieldParsers.length; fieldNr++) {
-                        const ccData = allCcData.fields[fieldNr];
-                        const fieldParser = embeddedCea608FieldParsers[fieldNr];
-                        if (fieldParser) {
-                            for (i = 0; i < ccData.length; i++) {
-                                fieldParser.addData(ccData[i][0] / embeddedTimescale, ccData[i][1]);
-                            }
-                        }
-                    }
-                    embeddedLastSequenceNumber = sequenceNumber;
-                }
+                _appendFragmentedWebVtt(bytes, sampleList);
             }
         }
     }
+
+    function _appendFragmentedSttp(bytes, sampleList, codecType) {
+        let i, j;
+
+        parser = parser !== null ? parser : _getParser(codecType);
+
+        for (i = 0; i < sampleList.length; i++) {
+            const sample = sampleList[i];
+            const sampleStart = sample.cts;
+            const timestampOffset = _getTimestampOffset();
+            const start = timestampOffset + sampleStart / timescale;
+            const end = start + sample.duration / timescale;
+            instance.buffered.add(start, end);
+            const dataView = new DataView(bytes, sample.offset, sample.subSizes[0]);
+            let ccContent = ISOBoxer.Utils.dataViewToString(dataView, Constants.UTF8);
+            const images = [];
+            let subOffset = sample.offset + sample.subSizes[0];
+
+            for (j = 1; j < sample.subSizes.length; j++) {
+                const inData = new Uint8Array(bytes, subOffset, sample.subSizes[j]);
+                const raw = String.fromCharCode.apply(null, inData);
+                images.push(raw);
+                subOffset += sample.subSizes[j];
+            }
+
+            try {
+                const manifest = manifestModel.getValue();
+
+                // Only used for Microsoft Smooth Streaming support - caption time is relative to sample time. In this case, we apply an offset.
+                const offsetTime = manifest.ttmlTimeIsRelative ? sampleStart / timescale : 0;
+                const result = parser.parse(ccContent, offsetTime, (sampleStart / timescale), ((sampleStart + sample.duration) / timescale), images);
+                textTracks.addCaptions(currFragmentedTrackIdx, timestampOffset, result);
+
+            } catch (e) {
+                fragmentModel.removeExecutedRequestsBeforeTime();
+                this.remove();
+                logger.error('TTML parser error: ' + e.message);
+            }
+        }
+    }
+
+    function _appendFragmentedWebVtt(bytes, sampleList) {
+        let i, j, k;
+
+        const captionArray = [];
+        for (i = 0; i < sampleList.length; i++) {
+            const sample = sampleList[i];
+            sample.cts -= firstFragmentedSubtitleStart;
+            const timestampOffset = _getTimestampOffset();
+            const start = timestampOffset + sample.cts / timescale;
+            const end = start + sample.duration / timescale;
+            instance.buffered.add(start, end);
+            const sampleData = bytes.slice(sample.offset, sample.offset + sample.size);
+            // There are boxes inside the sampleData, so we need a ISOBoxer to get at it.
+            const sampleBoxes = ISOBoxer.parseBuffer(sampleData);
+
+            for (j = 0; j < sampleBoxes.boxes.length; j++) {
+                const box1 = sampleBoxes.boxes[j];
+                logger.debug('VTT box1: ' + box1.type);
+                if (box1.type === 'vtte') {
+                    continue; //Empty box
+                }
+                if (box1.type === 'vttc') {
+                    logger.debug('VTT vttc boxes.length = ' + box1.boxes.length);
+                    let entry = {
+                        styles: {}
+                    };
+                    for (k = 0; k < box1.boxes.length; k++) {
+                        const box2 = box1.boxes[k];
+                        logger.debug('VTT box2: ' + box2.type);
+
+                        // Mandatory cue payload lines
+                        if (box2.type === 'payl') {
+                            entry.start = sample.cts / timescale;
+                            entry.end = (sample.cts + sample.duration) / timescale;
+                            entry.data = box2.cue_text;
+                        }
+
+                        // The styling information
+                        else if (box2.type === 'sttg' && box2.settings && box2.settings !== '') {
+                            try {
+                                const stylings = box2.settings.split(' ');
+                                entry.styles = vttParser.getCaptionStyles(stylings);
+                            } catch (e) {
+
+                            }
+                        }
+                    }
+                    if (entry && entry.data) {
+                        captionArray.push(entry);
+                        logger.debug(`VTT  ${entry.start} - ${entry.end} :  ${entry.data}`);
+                    }
+                }
+            }
+        }
+        if (captionArray.length > 0) {
+            textTracks.addCaptions(currFragmentedTrackIdx, 0, captionArray);
+        }
+    }
+
+    function _appendText(bytes, chunk, codecType) {
+        let result,
+            ccContent;
+
+        const dataView = new DataView(bytes, 0, bytes.byteLength);
+        ccContent = ISOBoxer.Utils.dataViewToString(dataView, Constants.UTF8);
+
+        try {
+            result = _getParser(codecType).parse(ccContent, 0);
+            textTracks.addCaptions(textTracks.getCurrentTrackIdx(), 0, result);
+            if (instance.buffered) {
+                instance.buffered.add(chunk.start, chunk.end);
+            }
+        } catch (e) {
+            errHandler.error(new DashJSError(Errors.TIMED_TEXT_ERROR_ID_PARSE_CODE, Errors.TIMED_TEXT_ERROR_MESSAGE_PARSE + e.message, ccContent));
+        }
+    }
+
+    function _isDiscontinuityOfChunks(embeddedLastSequenceNumber, sequenceNumber, numSequences, lastChunkEnd, chunkStart) {
+        if (embeddedLastSequenceNumber === null || sequenceNumber === null || lastChunkEnd === null || chunkStart === null) {
+            return false
+        }
+        // Sequence number is always 1 for low latency streams
+        if (sequenceNumber === embeddedLastSequenceNumber) {
+            // time-based continuity check
+            return lastChunkEnd !== chunkStart
+        }
+        return sequenceNumber !== embeddedLastSequenceNumber + numSequences;
+    }
+
+    function _appendEmbeddedText(bytes, chunk) {
+        let i, samplesInfo;
+
+        // Init segment
+        if (chunk.segmentType === HTTPRequest.INIT_SEGMENT_TYPE) {
+            if (embeddedTimescale === 0) {
+                embeddedTimescale = boxParser.getMediaTimescaleFromMoov(bytes);
+            }
+        }
+
+        // MediaSegment
+        else if (chunk.segmentType === HTTPRequest.MEDIA_SEGMENT_TYPE) {
+
+            if (embeddedTimescale === 0) {
+                logger.warn('CEA-608: No timescale for embeddedTextTrack yet');
+                return;
+            }
+
+            samplesInfo = boxParser.getSamplesInfo(bytes);
+
+            const sequenceNumber = samplesInfo.lastSequenceNumber;
+            const chunkStart = Math.trunc(chunk.start);
+            const chunkEnd = Math.trunc(chunk.end);
+
+            if (!embeddedCea608FieldParsers[0] && !embeddedCea608FieldParsers[1]) {
+                _setupCeaParser();
+            }
+
+            if (embeddedTimescale) {
+                if (_isDiscontinuityOfChunks(embeddedLastSequenceNumber, sequenceNumber, samplesInfo.numSequences, lastChunkEnd, chunkStart)) {
+                    for (i = 0; i < embeddedCea608FieldParsers.length; i++) {
+                        if (embeddedCea608FieldParsers[i]) {
+                            embeddedCea608FieldParsers[i].reset();
+                        }
+                    }
+                }
+
+                const allCcData = _extractCea608Data(bytes, samplesInfo.sampleList);
+
+                for (let fieldNr = 0; fieldNr < embeddedCea608FieldParsers.length; fieldNr++) {
+                    const ccData = allCcData.fields[fieldNr];
+                    const fieldParser = embeddedCea608FieldParsers[fieldNr];
+                    if (fieldParser) {
+                        for (i = 0; i < ccData.length; i++) {
+                            fieldParser.addData(ccData[i][0] / embeddedTimescale, ccData[i][1]);
+                        }
+                    }
+                }
+                embeddedLastSequenceNumber = sequenceNumber;
+                lastChunkEnd = chunkEnd;
+            }
+        }
+    }
+
+    function _setupCeaParser() {
+        // Time to setup the CEA-608 parsing
+        let trackIdx;
+        for (let i = 0; i < embeddedTracks.length; i++) {
+            trackIdx = textTracks.getTrackIdxForId(embeddedTracks[i].id);
+
+            if (trackIdx === -1) {
+                logger.warn('CEA-608: data before track is ready.');
+                return;
+            }
+
+            const handler = _makeCueAdderForIndex(trackIdx);
+            embeddedCea608FieldParsers[i] = new Cta608Parser(i + 1, {
+                newCue: handler
+            }, null);
+        }
+    }
+
+    function _makeCueAdderForIndex(trackIndex) {
+        function newCue(startTime, endTime, captionScreen) {
+            let captionsArray;
+            if (videoModel.getTTMLRenderingDiv()) {
+                captionsArray = embeddedTextHtmlRender.createHTMLCaptionsFromScreen(videoModel.getElement(), startTime, endTime, captionScreen);
+            } else {
+                const text = captionScreen.getDisplayText();
+                captionsArray = [{
+                    start: startTime,
+                    end: endTime,
+                    data: text,
+                    styles: {}
+                }];
+            }
+            if (captionsArray) {
+                textTracks.addCaptions(trackIndex, 0, captionsArray);
+            }
+        }
+
+        return newCue;
+    }
+
     /**
      * Extract CEA-608 data from a buffer of data.
      * @param {ArrayBuffer} data
      * @param {Array} samples cue information
      * @returns {Object|null} ccData corresponding to one segment.
      */
-    function extractCea608Data(data, samples) {
+    function _extractCea608Data(data, samples) {
         if (samples.length === 0) {
             return null;
         }
@@ -516,21 +546,20 @@ function TextSourceBuffer() {
         const raw = new DataView(data);
         for (let i = 0; i < samples.length; i++) {
             const sample = samples[i];
-            const cea608Ranges = cea608parser.findCea608Nalus(raw, sample.offset, sample.size);
+            const ccData = extractCta608DataFromSample(raw, sample.offset, sample.size);
+
             let lastSampleTime = null;
             let idx = 0;
-            for (let j = 0; j < cea608Ranges.length; j++) {
-                const ccData = cea608parser.extractCea608DataFromRange(raw, cea608Ranges[j]);
-                for (let k = 0; k < 2; k++) {
-                    if (ccData[k].length > 0) {
-                        if (sample.cts !== lastSampleTime) {
-                            idx = 0;
-                        } else {
-                            idx += 1;
-                        }
-                        allCcData.fields[k].push([sample.cts + (mseTimeOffset * embeddedTimescale), ccData[k], idx]);
-                        lastSampleTime = sample.cts;
+            for (let k = 0; k < 2; k++) {
+                if (ccData[k].length > 0) {
+                    if (sample.cts !== lastSampleTime) {
+                        idx = 0;
+                    } else {
+                        idx += 1;
                     }
+                    const timestampOffset = _getTimestampOffset();
+                    allCcData.fields[k].push([sample.cts + (timestampOffset * embeddedTimescale), ccData[k], idx]);
+                    lastSampleTime = sample.cts;
                 }
             }
         }
@@ -550,6 +579,10 @@ function TextSourceBuffer() {
         return allCcData;
     }
 
+    function _getTimestampOffset() {
+        return !isNaN(instance.timestampOffset) ? instance.timestampOffset : 0;
+    }
+
     function getIsDefault(mediaInfo) {
         //TODO How to tag default. currently same order as listed in manifest.
         // Is there a way to mark a text adaptation set as the default one? DASHIF meeting talk about using role which is being used for track KIND
@@ -567,10 +600,10 @@ function TextSourceBuffer() {
         return isDefault;
     }
 
-    function getParser(codecType) {
+    function _getParser(codecType) {
         let parser;
         if (codecType.search(Constants.VTT) >= 0) {
-            parser = vttParser;
+            parser = settings.get().streaming.text.webvtt.customRenderingEnabled && vttCustomRenderingParser ? vttCustomRenderingParser : vttParser;
         } else if (codecType.search(Constants.TTML) >= 0 || codecType.search(Constants.STPP) >= 0) {
             parser = ttmlParser;
         }
@@ -580,10 +613,11 @@ function TextSourceBuffer() {
     function remove(start, end) {
         //if start and end are not defined, remove all
         if ((start === undefined) && (start === end)) {
-            start = this.buffered.start(0);
-            end = this.buffered.end(this.buffered.length - 1);
+            start = instance.buffered.start(0);
+            end = instance.buffered.end(instance.buffered.length - 1);
         }
-        this.buffered.remove(start, end);
+        instance.buffered.remove(start, end);
+        textTracks.deleteCuesFromTrackIdx(currFragmentedTrackIdx, start, end);
     }
 
     function onVideoBufferCleared(e) {
@@ -595,17 +629,23 @@ function TextSourceBuffer() {
         });
     }
 
+    function resetMediaInfos() {
+        mediaInfos = [];
+    }
+
     instance = {
-        initialize: initialize,
-        append: append,
-        abort: abort,
-        addEmbeddedTrack: addEmbeddedTrack,
-        resetEmbedded: resetEmbedded,
-        setConfig: setConfig,
-        getConfig: getConfig,
-        setCurrentFragmentedTrackIdx: setCurrentFragmentedTrackIdx,
-        remove: remove,
-        reset: reset
+        initialize,
+        addMediaInfos,
+        resetMediaInfos,
+        getStreamId,
+        append,
+        abort,
+        addEmbeddedTrack,
+        resetEmbedded,
+        getConfig,
+        setCurrentFragmentedTrackIdx,
+        remove,
+        reset
     };
 
     setup();
@@ -614,4 +654,4 @@ function TextSourceBuffer() {
 }
 
 TextSourceBuffer.__dashjs_factory_name = 'TextSourceBuffer';
-export default FactoryMaker.getSingletonFactory(TextSourceBuffer);
+export default FactoryMaker.getClassFactory(TextSourceBuffer);

@@ -29,7 +29,8 @@
  *  POSSIBILITY OF SUCH DAMAGE.
  */
 
-import CustomTimeRanges from '../../utils/CustomTimeRanges';
+import CustomTimeRanges from '../../utils/CustomTimeRanges.js';
+import FactoryMaker from '../../../core/FactoryMaker.js';
 
 function RangeController(config) {
 
@@ -73,8 +74,8 @@ function RangeController(config) {
         // When not present, DASH Metrics reporting is requested
         // for the whole duration of the content.
         time = useWallClockTime ?
-                (new Date().getTime() / 1000) :
-                mediaElement.currentTime;
+            (new Date().getTime() / 1000) :
+            mediaElement.currentTime;
 
         for (let i = 0; i < numRanges; i += 1) {
             let start = ranges.start(i);
@@ -90,8 +91,8 @@ function RangeController(config) {
 
     instance = {
         initialize: initialize,
-        reset:      reset,
-        isEnabled:  isEnabled
+        reset: reset,
+        isEnabled: isEnabled
     };
 
     setup();
@@ -100,4 +101,4 @@ function RangeController(config) {
 }
 
 RangeController.__dashjs_factory_name = 'RangeController';
-export default dashjs.FactoryMaker.getClassFactory(RangeController); /* jshint ignore:line */
+export default FactoryMaker.getClassFactory(RangeController); 

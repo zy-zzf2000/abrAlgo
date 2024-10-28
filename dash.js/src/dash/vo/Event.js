@@ -34,12 +34,14 @@
  */
 class Event {
     constructor() {
+        this.type = '';
         this.duration = NaN;
         this.presentationTime = NaN;
         this.id = NaN;
         this.messageData = '';
         this.eventStream = null;
         this.presentationTimeDelta = NaN; // Specific EMSG Box parameter
+        this.parsedMessageData = null; // Parsed value of the event message
     }
 }
 

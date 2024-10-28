@@ -38,26 +38,20 @@
  * @implements LicenseServer
  * @class
  */
-import KeyPair from '../vo/KeyPair';
-import ClearKeyKeySet from '../vo/ClearKeyKeySet';
+import KeyPair from '../vo/KeyPair.js';
+import ClearKeyKeySet from '../vo/ClearKeyKeySet.js';
+import FactoryMaker from '../../../core/FactoryMaker.js';
 
 function ClearKey() {
 
     let instance;
 
-    function getServerURLFromMessage(url, message/*, messageType*/) {
-        // Build ClearKey server query string
-        const jsonMsg = JSON.parse(String.fromCharCode.apply(null, new Uint8Array(message)));
-        url += '/?';
-        for (let i = 0; i < jsonMsg.kids.length; i++) {
-            url += jsonMsg.kids[i] + '&';
-        }
-        url = url.substring(0, url.length - 1);
+    function getServerURLFromMessage(url /* message, messageType*/) {
         return url;
     }
 
     function getHTTPMethod(/*messageType*/) {
-        return 'GET';
+        return 'POST';
     }
 
     function getResponseType(/*keySystemStr*/) {
@@ -84,15 +78,15 @@ function ClearKey() {
     }
 
     instance = {
-        getServerURLFromMessage: getServerURLFromMessage,
-        getHTTPMethod: getHTTPMethod,
-        getResponseType: getResponseType,
-        getLicenseMessage: getLicenseMessage,
-        getErrorResponse: getErrorResponse
+        getServerURLFromMessage,
+        getHTTPMethod,
+        getResponseType,
+        getLicenseMessage,
+        getErrorResponse
     };
 
     return instance;
 }
 
 ClearKey.__dashjs_factory_name = 'ClearKey';
-export default dashjs.FactoryMaker.getSingletonFactory(ClearKey); /* jshint ignore:line */
+export default FactoryMaker.getSingletonFactory(ClearKey); 

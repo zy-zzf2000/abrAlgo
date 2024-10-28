@@ -29,8 +29,8 @@
  *  POSSIBILITY OF SUCH DAMAGE.
  */
 
-import ObjectUtils from '../utils/ObjectUtils';
-import FactoryMaker from '../../core/FactoryMaker';
+import ObjectUtils from '../utils/ObjectUtils.js';
+import FactoryMaker from '../../core/FactoryMaker.js';
 
 const DEFAULT_INDEX = NaN;
 
@@ -47,7 +47,8 @@ class Node {
 function BaseURLTreeModel() {
     let instance,
         root,
-        adapter;
+        adapter,
+        contentSteeringController;
 
     const context = this.context;
     const objectUtils = ObjectUtils(context).getInstance();
@@ -60,6 +61,9 @@ function BaseURLTreeModel() {
         if (config.adapter) {
             adapter = config.adapter;
         }
+        if (config.contentSteeringController) {
+            contentSteeringController = config.contentSteeringController
+        }
     }
 
     function checkConfig() {
@@ -69,7 +73,7 @@ function BaseURLTreeModel() {
     }
 
     function updateChildData(node, index, element) {
-        const baseUrls = adapter.getBaseURLsFromElement(element);
+        const baseUrls = _getAvailableBaseUrls(element);
 
         if (!node[index]) {
             node[index] = new Node(baseUrls);
@@ -83,23 +87,24 @@ function BaseURLTreeModel() {
 
     function getBaseURLCollectionsFromManifest(manifest) {
         checkConfig();
-        const baseUrls = adapter.getBaseURLsFromElement(manifest);
+
+        const baseUrls = _getAvailableBaseUrls(manifest)
 
         if (!objectUtils.areEqual(baseUrls, root.data.baseUrls)) {
             root.data.baseUrls = baseUrls;
             root.data.selectedIdx = DEFAULT_INDEX;
         }
 
-        if (manifest && manifest.Period_asArray) {
-            manifest.Period_asArray.forEach((p, pi) => {
+        if (manifest && manifest.Period) {
+            manifest.Period.forEach((p, pi) => {
                 updateChildData(root.children, pi, p);
 
-                if (p.AdaptationSet_asArray) {
-                    p.AdaptationSet_asArray.forEach((a, ai) => {
+                if (p.AdaptationSet) {
+                    p.AdaptationSet.forEach((a, ai) => {
                         updateChildData(root.children[pi].children, ai, a);
 
-                        if (a.Representation_asArray) {
-                            a.Representation_asArray.sort(
+                        if (a.Representation) {
+                            a.Representation.sort(
                                 adapter.getRepresentationSortFunction()
                             ).forEach((r, ri) => {
                                 updateChildData(
@@ -113,6 +118,21 @@ function BaseURLTreeModel() {
                 }
             });
         }
+    }
+
+    function _getAvailableBaseUrls(root) {
+        let targetBaseUrls = adapter.getBaseURLsFromElement(root);
+        const synthesizedBaseUrls = contentSteeringController.getSynthesizedBaseUrlElements(targetBaseUrls);
+
+        if (synthesizedBaseUrls && synthesizedBaseUrls.length > 0) {
+            targetBaseUrls = targetBaseUrls.concat(synthesizedBaseUrls)
+        }
+
+        return targetBaseUrls;
+    }
+
+    function getBaseUrls(manifest) {
+        return _getAvailableBaseUrls(manifest);
     }
 
     function walk(callback, node) {
@@ -161,11 +181,12 @@ function BaseURLTreeModel() {
     }
 
     instance = {
-        reset: reset,
-        update: update,
-        getForPath: getForPath,
-        invalidateSelectedIndexes: invalidateSelectedIndexes,
-        setConfig: setConfig
+        reset,
+        update,
+        getForPath,
+        invalidateSelectedIndexes,
+        setConfig,
+        getBaseUrls
     };
 
     setup();

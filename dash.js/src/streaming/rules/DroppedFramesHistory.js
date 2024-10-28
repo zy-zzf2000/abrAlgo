@@ -1,47 +1,70 @@
-
-import FactoryMaker from '../../core/FactoryMaker';
-
+import FactoryMaker from '../../core/FactoryMaker.js';
 
 function DroppedFramesHistory() {
 
-    let values = [];
-    let lastDroppedFrames = 0;
-    let lastTotalFrames = 0;
+    let values = {};
+    let lastDroppedFrames = {};
+    let lastTotalFrames = {};
 
-    function push(index, playbackQuality) {
+    function push(streamId, representationId, playbackQuality) {
+
+        if (!representationId) {
+            return;
+        }
+
+        if (!values[streamId]) {
+            _initializeForStream(streamId);
+        }
+
         let droppedVideoFrames = playbackQuality && playbackQuality.droppedVideoFrames ? playbackQuality.droppedVideoFrames : 0;
         let totalVideoFrames = playbackQuality && playbackQuality.totalVideoFrames ? playbackQuality.totalVideoFrames : 0;
 
-        let intervalDroppedFrames = droppedVideoFrames - lastDroppedFrames;
-        lastDroppedFrames = droppedVideoFrames;
+        let intervalDroppedFrames = droppedVideoFrames - lastDroppedFrames[streamId];
+        lastDroppedFrames[streamId] = droppedVideoFrames;
 
-        let intervalTotalFrames = totalVideoFrames - lastTotalFrames;
-        lastTotalFrames = totalVideoFrames;
+        let intervalTotalFrames = totalVideoFrames - lastTotalFrames[streamId];
+        lastTotalFrames[streamId] = totalVideoFrames;
 
-        if (!isNaN(index)) {
-            if (!values[index]) {
-                values[index] = {droppedVideoFrames: intervalDroppedFrames, totalVideoFrames: intervalTotalFrames};
-            } else {
-                values[index].droppedVideoFrames += intervalDroppedFrames;
-                values[index].totalVideoFrames += intervalTotalFrames;
-            }
+        const current = values[streamId];
+        if (!current[representationId]) {
+            current[representationId] = {
+                droppedVideoFrames: intervalDroppedFrames,
+                totalVideoFrames: intervalTotalFrames
+            };
+        } else {
+            current[representationId].droppedVideoFrames += intervalDroppedFrames;
+            current[representationId].totalVideoFrames += intervalTotalFrames;
         }
+
     }
 
-    function getDroppedFrameHistory() {
-        return values;
+    function _initializeForStream(streamId) {
+        values[streamId] = [];
+        lastDroppedFrames[streamId] = 0;
+        lastTotalFrames[streamId] = 0;
     }
 
-    function reset(playbackQuality) {
-        values = [];
-        lastDroppedFrames = playbackQuality.droppedVideoFrames;
-        lastTotalFrames = playbackQuality.totalVideoFrames;
+    function getFrameHistory(streamId) {
+        return values[streamId];
+    }
+
+    function clearForStream(streamId) {
+        delete values[streamId];
+        delete lastDroppedFrames[streamId];
+        delete lastTotalFrames[streamId];
+    }
+
+    function reset() {
+        values = {};
+        lastDroppedFrames = {};
+        lastTotalFrames = {};
     }
 
     return {
-        push: push,
-        getFrameHistory: getDroppedFrameHistory,
-        reset: reset
+        clearForStream,
+        getFrameHistory,
+        push,
+        reset
     };
 }
 

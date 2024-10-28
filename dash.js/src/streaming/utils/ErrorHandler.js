@@ -28,9 +28,9 @@
  *  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  *  POSSIBILITY OF SUCH DAMAGE.
  */
-import EventBus from '../../core/EventBus';
-import Events from '../../core/events/Events';
-import FactoryMaker from '../../core/FactoryMaker';
+import EventBus from '../../core/EventBus.js';
+import Events from '../../core/events/Events.js';
+import FactoryMaker from '../../core/FactoryMaker.js';
 
 /**
  * @module ErrorHandler
@@ -47,9 +47,8 @@ function ErrorHandler() {
      * @memberof module:ErrorHandler
      */
     function error(err) {
-        eventBus.trigger(Events.ERROR, {error: err});
+        eventBus.trigger(Events.ERROR, { error: err });
     }
-
     instance = {
         error: error
     };

@@ -97,6 +97,11 @@ class HTTPRequest {
          * @public
          */
         this.trace = [];
+        /**
+         * The CMSD static and dynamic values retrieved from CMSD response headers.
+         * @public
+         */
+        this.cmsd = null;
 
         /**
          * Type of stream ("audio" | "video" etc..)
@@ -109,7 +114,7 @@ class HTTPRequest {
          */
         this._tfinish = null;
         /**
-         * The duration of the media requests, if available, in milliseconds.
+         * The duration of the media requests, if available, in seconds.
          * @public
          */
         this._mediaduration = null;
@@ -128,6 +133,14 @@ class HTTPRequest {
          * @public
          */
         this._serviceLocation = null;
+        /**
+         * The type of the loader that was used. Distinguish between fetch loader and xhr loader
+         */
+        this._fileLoaderType = null;
+        /**
+         * The values derived from the ResourceTimingAPI.
+         */
+        this._resourceTimingValues = null;
     }
 }
 
@@ -137,8 +150,8 @@ class HTTPRequest {
  */
 class HTTPRequestTrace {
     /**
-    * @class
-    */
+     * @class
+     */
     constructor() {
         /**
          * Real-Time | Measurement stream start.
@@ -155,11 +168,6 @@ class HTTPRequestTrace {
          * @public
          */
         this.b = [];
-        /**
-         * Measurement throughput in kbits/s
-         * @public
-         */
-        this.t = null;
     }
 }
 
@@ -171,6 +179,10 @@ HTTPRequest.INIT_SEGMENT_TYPE = 'InitializationSegment';
 HTTPRequest.INDEX_SEGMENT_TYPE = 'IndexSegment';
 HTTPRequest.MEDIA_SEGMENT_TYPE = 'MediaSegment';
 HTTPRequest.BITSTREAM_SWITCHING_SEGMENT_TYPE = 'BitstreamSwitchingSegment';
+HTTPRequest.MSS_FRAGMENT_INFO_SEGMENT_TYPE = 'FragmentInfoSegment';
+HTTPRequest.DVB_REPORTING_TYPE = 'DVBReporting';
+HTTPRequest.LICENSE = 'license';
+HTTPRequest.CONTENT_STEERING_TYPE = 'ContentSteering';
 HTTPRequest.OTHER_TYPE = 'other';
 
-export { HTTPRequest, HTTPRequestTrace };
+export {HTTPRequest, HTTPRequestTrace};

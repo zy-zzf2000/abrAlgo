@@ -28,64 +28,199 @@
  *  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  *  POSSIBILITY OF SUCH DAMAGE.
  */
-import Constants from '../constants/Constants';
-import DashConstants from '../../dash/constants/DashConstants';
-import FactoryMaker from '../../core/FactoryMaker';
-import ThumbnailTrackInfo from '../vo/ThumbnailTrackInfo';
-import URLUtils from '../../streaming/utils/URLUtils';
-import { replaceIDForTemplate, getTimeBasedSegment } from '../../dash/utils/SegmentsUtils';
-
-import SegmentBaseLoader from '../../dash/SegmentBaseLoader';
-import BoxParser from '../../streaming/utils/BoxParser';
-import XHRLoader from '../../streaming/net/XHRLoader';
-import DashHandler from '../../dash/DashHandler';
-
-export const THUMBNAILS_SCHEME_ID_URIS = ['http://dashif.org/thumbnail_tile',
-                                   'http://dashif.org/guidelines/thumbnail_tile'];
+import Constants from '../constants/Constants.js';
+import DashConstants from '../../dash/constants/DashConstants.js';
+import FactoryMaker from '../../core/FactoryMaker.js';
+import ThumbnailTrackInfo from '../vo/ThumbnailTrackInfo.js';
+import URLUtils from '../../streaming/utils/URLUtils.js';
+import {replaceIDForTemplate, getTimeBasedSegment} from '../../dash/utils/SegmentsUtils.js';
+import BoxParser from '../../streaming/utils/BoxParser.js';
+import XHRLoader from '../../streaming/net/XHRLoader.js';
+import DashHandler from '../../dash/DashHandler.js';
+import SegmentsController from '../../dash/controllers/SegmentsController.js';
 
 function ThumbnailTracks(config) {
     const context = this.context;
-
     const adapter = config.adapter;
     const baseURLController = config.baseURLController;
-    const stream = config.stream;
+    const streamInfo = config.streamInfo;
     const timelineConverter = config.timelineConverter;
-    const dashMetrics = config.dashMetrics;
-    const mediaPlayerModel = config.mediaPlayerModel;
-    const errHandler = config.errHandler;
+    const debug = config.debug;
+    const eventBus = config.eventBus;
+    const events = config.events;
+    const dashConstants = config.dashConstants;
 
     const urlUtils = URLUtils(context).getInstance();
 
     let instance,
         tracks,
-        indexHandler,
+        representations,
+        dashHandler,
         currentTrackIndex,
         mediaInfo,
-        loader, segmentBaseLoader, boxParser;
+        segmentsController,
+        loader,
+        boxParser;
 
-    function initialize() {
+    function setup() {
         reset();
         loader = XHRLoader(context).create({});
         boxParser = BoxParser(context).getInstance();
-        segmentBaseLoader = SegmentBaseLoader(context).getInstance();
-        segmentBaseLoader.setConfig({
-            baseURLController: baseURLController,
-            dashMetrics: dashMetrics,
-            mediaPlayerModel: mediaPlayerModel,
-            errHandler: errHandler
+
+        segmentsController = SegmentsController(context).create({
+            events,
+            eventBus,
+            streamInfo,
+            timelineConverter,
+            dashConstants,
+            dashMetrics: config.dashMetrics,
+            segmentBaseController: config.segmentBaseController,
+            type: Constants.IMAGE
         });
 
-        indexHandler = DashHandler(context).create({timelineConverter: timelineConverter,
-                                baseURLController: baseURLController});
+        dashHandler = DashHandler(context).create({
+            streamInfo,
+            type: Constants.IMAGE,
+            timelineConverter,
+            segmentsController,
+            baseURLController,
+            debug,
+            eventBus,
+            events,
+            dashConstants,
+            urlUtils
+        });
 
         // initialize controllers
-        indexHandler.initialize(adapter ? adapter.getIsDynamic() : false);
-
-        // parse representation and create tracks
-        addTracks();
+        dashHandler.initialize(adapter ? adapter.getIsDynamic() : false);
     }
 
-    function normalizeSegments(fragments, representation) {
+    function addTracks() {
+        if (!streamInfo || !adapter) {
+            return;
+        }
+
+        // Extract thumbnail tracks
+        mediaInfo = adapter.getMediaInfoForType(streamInfo, Constants.IMAGE);
+        if (!mediaInfo) {
+            return;
+        }
+
+        const voReps = adapter.getVoRepresentations(mediaInfo);
+
+        if (voReps && voReps.length > 0) {
+            voReps.forEach((rep) => {
+                if ((rep.segmentInfoType === DashConstants.SEGMENT_TEMPLATE && rep.segmentDuration > 0 && rep.media) ||
+                    rep.segmentInfoType === DashConstants.SEGMENT_TIMELINE) {
+                    _createTrack(rep);
+                }
+                if (rep.segmentInfoType === DashConstants.SEGMENT_BASE) {
+                    _createTrack(rep, true);
+                }
+
+                representations.push(rep);
+            });
+        }
+
+        if (tracks.length > 0) {
+            // Sort bitrates and select the lowest bitrate rendition
+            tracks.sort((a, b) => a.bitrate - b.bitrate);
+        }
+    }
+
+    function _createTrack(representation, useSegmentBase) {
+        const track = new ThumbnailTrackInfo();
+        track.id = representation.id;
+        track.bitrate = representation.bandwidth;
+        track.width = representation.width;
+        track.height = representation.height;
+        track.tilesHor = 1;
+        track.tilesVert = 1;
+
+        if (representation.essentialProperties) {
+            representation.essentialProperties.forEach((p) => {
+                if (Constants.THUMBNAILS_SCHEME_ID_URIS.indexOf(p.schemeIdUri) >= 0 && p.value) {
+                    const vars = p.value.split('x');
+                    if (vars.length === 2 && !isNaN(vars[0]) && !isNaN(vars[1])) {
+                        track.tilesHor = parseInt(vars[0], 10);
+                        track.tilesVert = parseInt(vars[1], 10);
+                    }
+                }
+            });
+        }
+
+        if (useSegmentBase) {
+            segmentsController.updateSegmentData(representation)
+                .then((data) => {
+                    _handleUpdatedSegmentData(track, representation, data);
+                });
+
+        } else {
+            track.startNumber = representation.startNumber;
+            track.segmentDuration = representation.segmentDuration;
+            track.timescale = representation.timescale;
+            track.templateUrl = buildTemplateUrl(representation);
+        }
+
+        if (track.tilesHor > 0 && track.tilesVert > 0) {
+            // Precalculate width and heigth per tile for perf reasons
+            track.widthPerTile = track.width / track.tilesHor;
+            track.heightPerTile = track.height / track.tilesVert;
+            tracks.push(track);
+        }
+    }
+
+    function _handleUpdatedSegmentData(track, representation, data) {
+        let cache = [];
+        const segments = _normalizeSegments(data, representation);
+        representation.segments = segments;
+        representation.fragmentDuration = representation.segmentDuration || (representation.segments && representation.segments.length > 0 ? representation.segments[0].duration : NaN);
+        track.segmentDuration = representation.segments[0].duration; //assume all segments have the same duration
+
+        track.readThumbnail = function (time, callback) {
+
+            let cached = null;
+            cache.some(el => {
+                if (el.start <= time && el.end > time) {
+                    cached = el.url;
+                    return true;
+                }
+            });
+            if (cached) {
+                callback(cached);
+            } else {
+                representation.segments.some((ss) => {
+                    if (ss.mediaStartTime <= time && ss.mediaStartTime + ss.duration > time) {
+                        const baseURL = baseURLController.resolve(representation.path);
+                        loader.load({
+                            method: 'get',
+                            url: baseURL.url,
+                            request: {
+                                range: ss.mediaRange,
+                                responseType: 'arraybuffer'
+                            },
+                            onload: function (e) {
+                                let info = boxParser.getSamplesInfo(e.target.response);
+                                let blob = new Blob([e.target.response.slice(info.sampleList[0].offset, info.sampleList[0].offset + info.sampleList[0].size)], { type: 'image/jpeg' });
+                                let imageUrl = window.URL.createObjectURL(blob);
+                                cache.push({
+                                    start: ss.mediaStartTime,
+                                    end: ss.mediaStartTime + ss.duration,
+                                    url: imageUrl
+                                });
+                                if (callback) {
+                                    callback(imageUrl);
+                                }
+                            }
+                        });
+                        return true;
+                    }
+                });
+            }
+        };
+    }
+
+    function _normalizeSegments(data, representation) {
         const segments = [];
         let count = 0;
 
@@ -94,8 +229,8 @@ function ThumbnailTracks(config) {
             s,
             seg;
 
-        for (i = 0, len = fragments.length; i < len; i++) {
-            s = fragments[i];
+        for (i = 0, len = data.segments.length; i < len; i++) {
+            s = data.segments[i];
 
             seg = getTimeBasedSegment(
                 timelineConverter,
@@ -115,125 +250,6 @@ function ThumbnailTracks(config) {
             }
         }
         return segments;
-    }
-
-    function addTracks() {
-        if (!stream || !adapter) {
-            return;
-        }
-
-        const streamInfo = stream.getStreamInfo();
-        if (!streamInfo) {
-            return;
-        }
-
-        // Extract thumbnail tracks
-        mediaInfo = adapter.getMediaInfoForType(streamInfo, Constants.IMAGE);
-        if (!mediaInfo) {
-            return;
-        }
-
-        const voReps = adapter.getVoRepresentations(mediaInfo);
-
-        if (voReps && voReps.length > 0) {
-            voReps.forEach((rep) => {
-                if ((rep.segmentInfoType === DashConstants.SEGMENT_TEMPLATE && rep.segmentDuration > 0 && rep.media) ||
-                     rep.segmentInfoType === DashConstants.SEGMENT_TIMELINE) {
-                    createTrack(rep);
-                }
-                if (rep.segmentInfoType === DashConstants.SEGMENT_BASE) {
-                    createTrack(rep, true);
-                }
-            });
-        }
-
-        if (tracks.length > 0) {
-            // Sort bitrates and select the lowest bitrate rendition
-            tracks.sort((a, b) => a.bitrate - b.bitrate);
-            currentTrackIndex = tracks.length - 1;
-        }
-    }
-
-    function createTrack(representation, useSegmentBase) {
-        const track = new ThumbnailTrackInfo();
-        track.id = representation.id;
-        track.bitrate = representation.bandwidth;
-        track.width = representation.width;
-        track.height = representation.height;
-        track.tilesHor = 1;
-        track.tilesVert = 1;
-
-        if (representation.essentialProperties) {
-            representation.essentialProperties.forEach((p) => {
-                if (THUMBNAILS_SCHEME_ID_URIS.indexOf(p.schemeIdUri) >= 0 && p.value) {
-                    const vars = p.value.split('x');
-                    if (vars.length === 2 && !isNaN(vars[0]) && !isNaN(vars[1])) {
-                        track.tilesHor = parseInt(vars[0], 10);
-                        track.tilesVert = parseInt(vars[1], 10);
-                    }
-                }
-            });
-        }
-
-        if (useSegmentBase) {
-            segmentBaseLoader.loadSegments(representation, Constants.IMAGE, representation.indexRange, {}, function (segments, representation) {
-                var cache = [];
-                segments = normalizeSegments(segments, representation);
-                track.segmentDuration = segments[0].duration; //assume all segments have the same duration
-                track.readThumbnail = function (time, callback) {
-
-                    let cached = null;
-                    cache.some(el => {
-                        if (el.start <= time && el.end > time) {
-                            cached = el.url;
-                            return true;
-                        }
-                    });
-                    if (cached) {
-                        callback(cached);
-                    } else {
-                        segments.some((ss) => {
-                            if (ss.mediaStartTime <= time && ss.mediaStartTime + ss.duration > time) {
-                                const baseURL = baseURLController.resolve(representation.path);
-                                loader.load({
-                                    method: 'get',
-                                    url: baseURL.url,
-                                    request: {
-                                        range: ss.mediaRange,
-                                        responseType: 'arraybuffer'
-                                    },
-                                    onload: function (e) {
-                                        let info = boxParser.getSamplesInfo(e.target.response);
-                                        let blob = new Blob( [ e.target.response.slice(info.sampleList[0].offset, info.sampleList[0].offset + info.sampleList[0].size) ], { type: 'image/jpeg' } );
-                                        let imageUrl = window.URL.createObjectURL( blob );
-                                        cache.push({
-                                            start: ss.mediaStartTime,
-                                            end: ss.mediaStartTime + ss.duration,
-                                            url: imageUrl
-                                        });
-                                        if (callback)
-                                            callback(imageUrl);
-                                    }
-                                });
-                                return true;
-                            }
-                        });
-                    }
-                };
-            });
-        } else {
-            track.startNumber = representation.startNumber;
-            track.segmentDuration = representation.segmentDuration;
-            track.timescale = representation.timescale;
-            track.templateUrl = buildTemplateUrl(representation);
-        }
-
-        if (track.tilesHor > 0 && track.tilesVert > 0) {
-            // Precalculate width and heigth per tile for perf reasons
-            track.widthPerTile = track.width / track.tilesHor;
-            track.heightPerTile = track.height / track.tilesVert;
-            tracks.push(track);
-        }
     }
 
     function buildTemplateUrl(representation) {
@@ -273,6 +289,20 @@ function ThumbnailTracks(config) {
         currentTrackIndex = index;
     }
 
+    function setTrackById(id) {
+        if (!tracks || tracks.length === 0) {
+            return;
+        }
+
+        const index = tracks.findIndex((elem) => {
+            return elem.id === id
+        })
+
+        if (index !== -1) {
+            currentTrackIndex = index;
+        }
+    }
+
     function getThumbnailRequestForTime(time) {
         let currentVoRep;
         const voReps = adapter.getVoRepresentations(mediaInfo);
@@ -283,26 +313,33 @@ function ThumbnailTracks(config) {
             }
         }
 
-        return indexHandler.getSegmentRequestForTime(mediaInfo, currentVoRep, time);
+        return dashHandler.getSegmentRequestForTime(mediaInfo, currentVoRep, time);
+    }
+
+    function getRepresentations() {
+        return representations
     }
 
     function reset() {
         tracks = [];
+        representations = [];
         currentTrackIndex = -1;
         mediaInfo = null;
     }
 
     instance = {
-        initialize: initialize,
-        getTracks: getTracks,
-        reset: reset,
-        setTrackByIndex: setTrackByIndex,
-        getCurrentTrack: getCurrentTrack,
-        getCurrentTrackIndex: getCurrentTrackIndex,
-        getThumbnailRequestForTime: getThumbnailRequestForTime
+        addTracks,
+        getCurrentTrack,
+        getCurrentTrackIndex,
+        getRepresentations,
+        getThumbnailRequestForTime,
+        getTracks,
+        reset,
+        setTrackById,
+        setTrackByIndex,
     };
 
-    initialize();
+    setup();
 
     return instance;
 }

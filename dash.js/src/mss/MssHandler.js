@@ -29,83 +29,61 @@
  *  POSSIBILITY OF SUCH DAMAGE.
  */
 
-import DataChunk from '../streaming/vo/DataChunk';
-import FragmentRequest from '../streaming/vo/FragmentRequest';
-import MssFragmentInfoController from './MssFragmentInfoController';
-import MssFragmentProcessor from './MssFragmentProcessor';
-import MssParser from './parser/MssParser';
-import MssErrors from './errors/MssErrors';
-import DashJSError from '../streaming/vo/DashJSError';
+import DataChunk from '../streaming/vo/DataChunk.js';
+import FragmentRequest from '../streaming/vo/FragmentRequest.js';
+import MssFragmentInfoController from './MssFragmentInfoController.js';
+import MssFragmentProcessor from './MssFragmentProcessor.js';
+import MssParser from './parser/MssParser.js';
+import MssErrors from './errors/MssErrors.js';
+import DashJSError from '../streaming/vo/DashJSError.js';
+import {HTTPRequest} from '../streaming/vo/metrics/HTTPRequest.js';
 
 function MssHandler(config) {
 
     config = config || {};
-    let context = this.context;
-    let eventBus = config.eventBus;
+    const context = this.context;
+    const eventBus = config.eventBus;
     const events = config.events;
     const constants = config.constants;
     const initSegmentType = config.initSegmentType;
-    let dashMetrics = config.dashMetrics;
-    let playbackController = config.playbackController;
-    let protectionController = config.protectionController;
-    let mssFragmentProcessor = MssFragmentProcessor(context).create({
-        dashMetrics: dashMetrics,
-        playbackController: playbackController,
-        protectionController: protectionController,
-        eventBus: eventBus,
-        constants: constants,
-        ISOBoxer: config.ISOBoxer,
-        debug: config.debug,
-        errHandler: config.errHandler
-    });
+    const playbackController = config.playbackController;
+    const streamController = config.streamController;
     let mssParser,
+        mssFragmentProcessor,
+        fragmentInfoControllers,
         instance;
 
-    function setup() {}
+    function setup() {
+        fragmentInfoControllers = [];
+    }
 
-    function onInitializationRequested(e) {
-        let streamProcessor = e.sender.getStreamProcessor();
-        let request = new FragmentRequest();
-        let representationController = streamProcessor.getRepresentationController();
-        let representation = representationController.getCurrentRepresentation();
+    function createMssFragmentProcessor() {
+        mssFragmentProcessor = MssFragmentProcessor(context).create(config);
+    }
 
-        request.mediaType = representation.adaptation.type;
-        request.type = initSegmentType;
-        request.range = representation.range;
-        request.quality = representation.index;
-        request.mediaInfo = streamProcessor.getMediaInfo();
-        request.representationId = representation.id;
+    function getStreamProcessor(type) {
+        return streamController.getActiveStreamProcessors().filter(processor => {
+            return processor.getType() === type;
+        })[0];
+    }
 
-        const chunk = createDataChunk(request, streamProcessor.getStreamInfo().id, e.type !== events.FRAGMENT_LOADING_PROGRESS);
-
-        try {
-            // Generate initialization segment (moov)
-            chunk.bytes = mssFragmentProcessor.generateMoov(representation);
-        } catch (e) {
-            config.errHandler.error(new DashJSError(e.code, e.message, e.data));
-        }
-
-        eventBus.trigger(events.INIT_FRAGMENT_LOADED, {
-            chunk: chunk,
-            fragmentModel: streamProcessor.getFragmentModel()
-        });
-
-        // Change the sender value to stop event to be propagated
-        e.sender = null;
+    function getFragmentInfoController(type) {
+        return fragmentInfoControllers.filter(controller => {
+            return (controller.getType() === type);
+        })[0];
     }
 
     function createDataChunk(request, streamId, endFragment) {
         const chunk = new DataChunk();
 
         chunk.streamId = streamId;
-        chunk.mediaInfo = request.mediaInfo;
         chunk.segmentType = request.type;
         chunk.start = request.startTime;
         chunk.duration = request.duration;
         chunk.end = chunk.start + chunk.duration;
         chunk.index = request.index;
-        chunk.quality = request.quality;
-        chunk.representationId = request.representationId;
+        chunk.bandwidth = request.bandwidth;
+        chunk.representation = request.representation;
         chunk.endFragment = endFragment;
 
         return chunk;
@@ -113,57 +91,96 @@ function MssHandler(config) {
 
     function startFragmentInfoControllers() {
 
-        let streamController = playbackController.getStreamController();
-        if (!streamController) {
-            return;
-        }
-
-        // Create MssFragmentInfoControllers for each StreamProcessor of active stream (only for audio, video or fragmentedText)
+        // Create MssFragmentInfoControllers for each StreamProcessor of active stream (only for audio, video or text)
         let processors = streamController.getActiveStreamProcessors();
         processors.forEach(function (processor) {
             if (processor.getType() === constants.VIDEO ||
                 processor.getType() === constants.AUDIO ||
-                processor.getType() === constants.FRAGMENTED_TEXT) {
+                processor.getType() === constants.TEXT) {
 
-                // Check MssFragmentInfoController already registered to StreamProcessor
-                let i;
-                let alreadyRegistered = false;
-                let externalControllers = processor.getExternalControllers();
-                for (i = 0; i < externalControllers.length; i++) {
-                    if (externalControllers[i].controllerType &&
-                        externalControllers[i].controllerType === 'MssFragmentInfoController') {
-                        alreadyRegistered = true;
-                    }
-                }
-
-                if (!alreadyRegistered) {
-                    let fragmentInfoController = MssFragmentInfoController(context).create({
+                let fragmentInfoController = getFragmentInfoController(processor.getType());
+                if (!fragmentInfoController) {
+                    fragmentInfoController = MssFragmentInfoController(context).create({
                         streamProcessor: processor,
-                        eventBus: eventBus,
-                        dashMetrics: dashMetrics,
-                        playbackController: playbackController,
                         baseURLController: config.baseURLController,
-                        ISOBoxer: config.ISOBoxer,
                         debug: config.debug
                     });
                     fragmentInfoController.initialize();
-                    fragmentInfoController.start();
+                    fragmentInfoControllers.push(fragmentInfoController);
                 }
+                fragmentInfoController.start();
             }
         });
+    }
+
+    function stopFragmentInfoControllers() {
+        fragmentInfoControllers.forEach(c => {
+            c.reset();
+        });
+        fragmentInfoControllers = [];
+    }
+
+    function onInitFragmentNeeded(e) {
+        let streamProcessor = getStreamProcessor(e.mediaType);
+        if (!streamProcessor) {
+            return;
+        }
+
+        // Create init segment request
+        let representationController = streamProcessor.getRepresentationController();
+        let representation = representationController.getCurrentRepresentation();
+        let mediaInfo = streamProcessor.getMediaInfo();
+
+        let request = new FragmentRequest();
+        request.mediaType = representation.adaptation.type;
+        request.type = initSegmentType;
+        request.range = representation.range;
+        request.bandwidth = representation.bandwidth;
+        request.representation = representation;
+
+        const chunk = createDataChunk(request, mediaInfo.streamInfo.id, e.type !== events.FRAGMENT_LOADING_PROGRESS);
+
+        try {
+            // Generate init segment (moov)
+            chunk.bytes = mssFragmentProcessor.generateMoov(representation);
+
+            // Notify init segment has been loaded
+            eventBus.trigger(events.INIT_FRAGMENT_LOADED,
+                { chunk: chunk },
+                { streamId: mediaInfo.streamInfo.id, mediaType: representation.adaptation.type }
+            );
+        } catch (e) {
+            config.errHandler.error(new DashJSError(e.code, e.message, e.data));
+        }
+
+        // Change the sender value to stop event to be propagated
+        e.sender = null;
     }
 
     function onSegmentMediaLoaded(e) {
         if (e.error) {
             return;
         }
-        // Process moof to transcode it from MSS to DASH
-        let streamProcessor = e.sender.getStreamProcessor();
+
+        let streamProcessor = getStreamProcessor(e.request.mediaType);
+        if (!streamProcessor) {
+            return;
+        }
+
+        // Process moof to transcode it from MSS to DASH (or to update segment timeline for SegmentInfo fragments)
         mssFragmentProcessor.processFragment(e, streamProcessor);
 
+        if (e.request.type === HTTPRequest.MSS_FRAGMENT_INFO_SEGMENT_TYPE) {
+            // If FragmentInfo loaded, then notify corresponding MssFragmentInfoController
+            let fragmentInfoController = getFragmentInfoController(e.request.mediaType);
+            if (fragmentInfoController) {
+                fragmentInfoController.fragmentInfoLoaded(e);
+            }
+        }
+
         // Start MssFragmentInfoControllers in case of start-over streams
-        let streamInfo = streamProcessor.getStreamInfo();
-        if (!streamInfo.manifestInfo.isDynamic && streamInfo.manifestInfo.DVRWindowSize !== Infinity) {
+        let manifestInfo = e.request.representation.mediaInfo.streamInfo.manifestInfo;
+        if (!manifestInfo.isDynamic && manifestInfo.dvrWindowSize !== Infinity) {
             startFragmentInfoControllers();
         }
     }
@@ -174,7 +191,7 @@ function MssHandler(config) {
         }
     }
 
-    function onPlaybackSeekAsked() {
+    function onPlaybackSeeking() {
         if (playbackController.getIsDynamic() && playbackController.getTime() !== 0) {
             startFragmentInfoControllers();
         }
@@ -189,19 +206,27 @@ function MssHandler(config) {
     }
 
     function registerEvents() {
-        eventBus.on(events.INIT_REQUESTED, onInitializationRequested, instance, dashjs.FactoryMaker.getSingletonFactoryByName(eventBus.getClassName()).EVENT_PRIORITY_HIGH); /* jshint ignore:line */
-        eventBus.on(events.PLAYBACK_PAUSED, onPlaybackPaused, instance, dashjs.FactoryMaker.getSingletonFactoryByName(eventBus.getClassName()).EVENT_PRIORITY_HIGH); /* jshint ignore:line */
-        eventBus.on(events.PLAYBACK_SEEK_ASKED, onPlaybackSeekAsked, instance, dashjs.FactoryMaker.getSingletonFactoryByName(eventBus.getClassName()).EVENT_PRIORITY_HIGH); /* jshint ignore:line */
-        eventBus.on(events.FRAGMENT_LOADING_COMPLETED, onSegmentMediaLoaded, instance, dashjs.FactoryMaker.getSingletonFactoryByName(eventBus.getClassName()).EVENT_PRIORITY_HIGH); /* jshint ignore:line */
+        eventBus.on(events.INIT_FRAGMENT_NEEDED, onInitFragmentNeeded, instance, { priority: dashjs.FactoryMaker.getSingletonFactoryByName(eventBus.getClassName()).EVENT_PRIORITY_HIGH });
+        eventBus.on(events.PLAYBACK_PAUSED, onPlaybackPaused, instance, { priority: dashjs.FactoryMaker.getSingletonFactoryByName(eventBus.getClassName()).EVENT_PRIORITY_HIGH });
+        eventBus.on(events.PLAYBACK_SEEKING, onPlaybackSeeking, instance, { priority: dashjs.FactoryMaker.getSingletonFactoryByName(eventBus.getClassName()).EVENT_PRIORITY_HIGH });
+        eventBus.on(events.FRAGMENT_LOADING_COMPLETED, onSegmentMediaLoaded, instance, { priority: dashjs.FactoryMaker.getSingletonFactoryByName(eventBus.getClassName()).EVENT_PRIORITY_HIGH });
         eventBus.on(events.TTML_TO_PARSE, onTTMLPreProcess, instance);
     }
 
     function reset() {
-        eventBus.off(events.INIT_REQUESTED, onInitializationRequested, this);
+        if (mssParser) {
+            mssParser.reset();
+            mssParser = undefined;
+        }
+
+        eventBus.off(events.INIT_FRAGMENT_NEEDED, onInitFragmentNeeded, this);
         eventBus.off(events.PLAYBACK_PAUSED, onPlaybackPaused, this);
-        eventBus.off(events.PLAYBACK_SEEK_ASKED, onPlaybackSeekAsked, this);
+        eventBus.off(events.PLAYBACK_SEEKING, onPlaybackSeeking, this);
         eventBus.off(events.FRAGMENT_LOADING_COMPLETED, onSegmentMediaLoaded, this);
         eventBus.off(events.TTML_TO_PARSE, onTTMLPreProcess, this);
+
+        // Reset FragmentInfoControllers
+        stopFragmentInfoControllers();
     }
 
     function createMssParser() {
@@ -210,9 +235,10 @@ function MssHandler(config) {
     }
 
     instance = {
-        reset: reset,
-        createMssParser: createMssParser,
-        registerEvents: registerEvents
+        reset,
+        createMssParser,
+        createMssFragmentProcessor,
+        registerEvents
     };
 
     setup();
@@ -221,7 +247,7 @@ function MssHandler(config) {
 }
 
 MssHandler.__dashjs_factory_name = 'MssHandler';
-const factory = dashjs.FactoryMaker.getClassFactory(MssHandler); /* jshint ignore:line */
+const factory = dashjs.FactoryMaker.getClassFactory(MssHandler);
 factory.errors = MssErrors;
-dashjs.FactoryMaker.updateClassFactory(MssHandler.__dashjs_factory_name, factory); /* jshint ignore:line */
-export default factory; /* jshint ignore:line */
+dashjs.FactoryMaker.updateClassFactory(MssHandler.__dashjs_factory_name, factory);
+export default factory;

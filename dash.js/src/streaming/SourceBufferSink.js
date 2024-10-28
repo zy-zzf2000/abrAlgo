@@ -28,103 +28,234 @@
  *  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  *  POSSIBILITY OF SUCH DAMAGE.
  */
-import Debug from '../core/Debug';
-import DashJSError from './vo/DashJSError';
-import EventBus from '../core/EventBus';
-import Events from '../core/events/Events';
-import FactoryMaker from '../core/FactoryMaker';
-import TextController from './text/TextController';
-import Errors from '../core/errors/Errors';
+import Debug from '../core/Debug.js';
+import DashJSError from './vo/DashJSError.js';
+import FactoryMaker from '../core/FactoryMaker.js';
+import Errors from '../core/errors/Errors.js';
+import Settings from '../core/Settings.js';
+import constants from './constants/Constants.js';
+import {HTTPRequest} from './vo/metrics/HTTPRequest.js';
+import Events from '../core/events/Events.js';
 
-const MAX_ALLOWED_DISCONTINUITY = 0.1; // 100 milliseconds
+const APPEND_WINDOW_START_OFFSET = 0.1;
+const APPEND_WINDOW_END_OFFSET = 0.01;
 
 /**
  * @class SourceBufferSink
  * @ignore
  * @implements FragmentSink
  */
-function SourceBufferSink(mediaSource, mediaInfo, onAppendedCallback, oldBuffer) {
+
+const CHECK_INTERVAL = 50;
+
+function SourceBufferSink(config) {
     const context = this.context;
-    const eventBus = EventBus(context).getInstance();
+    const settings = Settings(context).getInstance();
+    const textController = config.textController;
+    const eventBus = config.eventBus;
 
     let instance,
+        type,
         logger,
         buffer,
-        isAppendingInProgress,
+        mediaInfo,
         intervalId;
 
     let callbacks = [];
     let appendQueue = [];
-    let onAppended = onAppendedCallback;
+    let isAppendingInProgress = false;
+    let mediaSource = config.mediaSource;
+    let lastRequestAppended = null;
 
     function setup() {
         logger = Debug(context).getInstance().getLogger(instance);
-        isAppendingInProgress = false;
+    }
 
-        const codec = mediaInfo.codec;
+    function _getCodecStringForRepresentation(representation) {
+        return representation.mimeType + ';codecs="' + representation.codecs + '"';
+    }
+
+    function initializeForStreamSwitch(mInfo, selectedRepresentation, oldSourceBufferSink) {
+        mediaInfo = mInfo;
+        type = mediaInfo.type;
+
+        _copyPreviousSinkData(oldSourceBufferSink);
+        _addEventListeners();
+    }
+
+    function changeType(representation) {
+        const codec = _getCodecStringForRepresentation(representation);
+        return new Promise((resolve) => {
+            _waitForUpdateEnd(() => {
+                if (buffer.changeType) {
+                    logger.debug(`Changing SourceBuffer codec to ${codec}`);
+                    buffer.changeType(codec);
+                }
+                resolve();
+            });
+        });
+    }
+
+    function _copyPreviousSinkData(oldSourceBufferSink) {
+        buffer = oldSourceBufferSink.getBuffer();
+    }
+
+    function initializeForFirstUse(mInfo, selectedRepresentation) {
+        mediaInfo = mInfo;
+        const streamInfo = mInfo.streamInfo;
+        type = mediaInfo.type;
+        const codec = selectedRepresentation ? _getCodecStringForRepresentation(selectedRepresentation) : mInfo.codec;
         try {
             // Safari claims to support anything starting 'application/mp4'.
             // it definitely doesn't understand 'application/mp4;codecs="stpp"'
             // - currently no browser does, so check for it and use our own
             // implementation. The same is true for codecs="wvtt".
             if (codec.match(/application\/mp4;\s*codecs="(stpp|wvtt).*"/i)) {
-                throw new Error('not really supported');
-            }
-            buffer = oldBuffer ? oldBuffer : mediaSource.addSourceBuffer(codec);
-            if (buffer.changeType && oldBuffer) {
-                logger.debug('Doing period transition with changeType');
-                buffer.changeType(codec);
+                return _initializeForText(streamInfo);
             }
 
-            const CHECK_INTERVAL = 50;
-            // use updateend event if possible
-            if (typeof buffer.addEventListener === 'function') {
-                try {
-                    buffer.addEventListener('updateend', updateEndHandler, false);
-                    buffer.addEventListener('error', errHandler, false);
-                    buffer.addEventListener('abort', errHandler, false);
+            buffer = mediaSource.addSourceBuffer(codec);
 
-                } catch (err) {
-                    // use setInterval to periodically check if updating has been completed
-                    intervalId = setInterval(checkIsUpdateEnded, CHECK_INTERVAL);
-                }
-            } else {
-                // use setInterval to periodically check if updating has been completed
-                intervalId = setInterval(checkIsUpdateEnded, CHECK_INTERVAL);
+            _addEventListeners();
+
+            const promises = [];
+
+            promises.push(updateAppendWindow(mediaInfo.streamInfo));
+
+            if (selectedRepresentation && selectedRepresentation.mseTimeOffset !== undefined) {
+                promises.push(updateTimestampOffset(selectedRepresentation.mseTimeOffset));
             }
-        } catch (ex) {
+
+            return Promise.all(promises);
+
+        } catch (e) {
             // Note that in the following, the quotes are open to allow for extra text after stpp and wvtt
-            if ((mediaInfo.isText) || (codec.indexOf('codecs="stpp') !== -1) || (codec.indexOf('codecs="wvtt') !== -1)) {
-                const textController = TextController(context).getInstance();
-                buffer = textController.getTextSourceBuffer();
-            } else {
-                throw ex;
+            if ((mediaInfo.type == constants.TEXT && !mediaInfo.isFragmented) || (codec.indexOf('codecs="stpp') !== -1) || (codec.indexOf('codecs="vtt') !== -1) || (codec.indexOf('text/vtt') !== -1)) {
+                return _initializeForText(streamInfo);
             }
+            return Promise.reject(e);
         }
     }
 
-    function reset(keepBuffer) {
-        if (buffer) {
+    function _initializeForText(streamInfo) {
+        buffer = textController.getTextSourceBuffer(streamInfo);
+        return Promise.resolve();
+    }
+
+    function _addEventListeners() {
+        // use updateend event if possible
+        if (typeof buffer.addEventListener === 'function') {
+            try {
+                buffer.addEventListener('updateend', _updateEndHandler, false);
+                buffer.addEventListener('error', _errHandler, false);
+                buffer.addEventListener('abort', _errHandler, false);
+
+            } catch (err) {
+                // use setInterval to periodically check if updating has been completed
+                intervalId = setInterval(_updateEndHandler, CHECK_INTERVAL);
+            }
+        } else {
+            // use setInterval to periodically check if updating has been completed
+            intervalId = setInterval(_updateEndHandler, CHECK_INTERVAL);
+        }
+    }
+
+    function getType() {
+        return type;
+    }
+
+    function removeEventListeners() {
+        try {
             if (typeof buffer.removeEventListener === 'function') {
-                buffer.removeEventListener('updateend', updateEndHandler, false);
-                buffer.removeEventListener('error', errHandler, false);
-                buffer.removeEventListener('abort', errHandler, false);
+                buffer.removeEventListener('updateend', _updateEndHandler, false);
+                buffer.removeEventListener('error', _errHandler, false);
+                buffer.removeEventListener('abort', _errHandler, false);
             }
             clearInterval(intervalId);
-            if (!keepBuffer) {
-                try {
-                    if (!buffer.getClassName || buffer.getClassName() !== 'TextSourceBuffer') {
-                        mediaSource.removeSourceBuffer(buffer);
-                    }
-                } catch (e) {
-                    logger.error('Failed to remove source buffer from media source.');
-                }
-                buffer = null;
-            }
-            isAppendingInProgress = false;
+        } catch (e) {
+            logger.error(e);
         }
-        appendQueue = [];
-        onAppended = null;
+    }
+
+    function updateAppendWindow(sInfo) {
+        return new Promise((resolve) => {
+
+            if (!buffer || !settings.get().streaming.buffer.useAppendWindow) {
+                resolve();
+                return;
+            }
+
+            _waitForUpdateEnd(() => {
+                try {
+                    if (!buffer) {
+                        resolve();
+                        return;
+                    }
+
+                    let appendWindowEnd = mediaSource.duration;
+                    let appendWindowStart = 0;
+                    if (sInfo && !isNaN(sInfo.start) && !isNaN(sInfo.duration) && isFinite(sInfo.duration)) {
+                        appendWindowEnd = sInfo.start + sInfo.duration;
+                    }
+                    if (sInfo && !isNaN(sInfo.start)) {
+                        appendWindowStart = sInfo.start;
+                    }
+                    if (buffer.appendWindowEnd !== appendWindowEnd || buffer.appendWindowStart !== appendWindowStart) {
+                        buffer.appendWindowStart = 0;
+                        buffer.appendWindowEnd = appendWindowEnd + APPEND_WINDOW_END_OFFSET;
+                        buffer.appendWindowStart = Math.max(appendWindowStart - APPEND_WINDOW_START_OFFSET, 0);
+                        logger.debug(`Updated append window for ${mediaInfo.type}. Set start to ${buffer.appendWindowStart} and end to ${buffer.appendWindowEnd}`);
+                    }
+
+                    resolve();
+                } catch (e) {
+                    logger.warn(`Failed to set append window`);
+                    resolve();
+                }
+            });
+        });
+    }
+
+    function updateTimestampOffset(mseTimeOffset) {
+        return new Promise((resolve) => {
+
+            if (!buffer) {
+                resolve();
+                return;
+            }
+
+            _waitForUpdateEnd(() => {
+                try {
+                    if (buffer.timestampOffset !== mseTimeOffset && !isNaN(mseTimeOffset)) {
+                        buffer.timestampOffset = mseTimeOffset;
+                        logger.debug(`Set MSE timestamp offset to ${mseTimeOffset}`);
+                    }
+                    resolve();
+                } catch (e) {
+                    resolve();
+                }
+            });
+        });
+    }
+
+
+    function reset() {
+        if (buffer) {
+            try {
+                callbacks = [];
+                removeEventListeners();
+                isAppendingInProgress = false;
+                appendQueue = [];
+                if (!buffer.getClassName || buffer.getClassName() !== 'TextSourceBuffer') {
+                    logger.debug(`Removing sourcebuffer from media source`);
+                    mediaSource.removeSourceBuffer(buffer);
+                }
+            } catch (e) {
+
+            }
+            buffer = null;
+        }
+        lastRequestAppended = null;
     }
 
     function getBuffer() {
@@ -140,215 +271,216 @@ function SourceBufferSink(mediaSource, mediaInfo, onAppendedCallback, oldBuffer)
         }
     }
 
-    function hasDiscontinuitiesAfter(time) {
-        try {
-            const ranges = getAllBufferRanges();
-            if (ranges && ranges.length > 1) {
-                for (let i = 0, len = ranges.length; i < len; i++) {
-                    if (i > 0) {
-                        if (time < ranges.start(i) && ranges.start(i) > ranges.end(i - 1) + MAX_ALLOWED_DISCONTINUITY) {
-                            return true;
-                        }
-                    }
-                }
-            }
-        } catch (e) {
-            logger.error('hasDiscontinuities exception: ' + e.message);
-        }
-        return false;
-    }
-
-    function append(chunk) {
-        if (!chunk) {
-            onAppended({
-                chunk: chunk,
-                error: new DashJSError(Errors.APPEND_ERROR_CODE, Errors.APPEND_ERROR_MESSAGE)
-            });
-            return;
-        }
-        appendQueue.push(chunk);
-        if (!isAppendingInProgress) {
-            waitForUpdateEnd(appendNextInQueue.bind(this));
-        }
-    }
-
-    function updateTimestampOffset(MSETimeOffset) {
-        if (buffer.timestampOffset !== MSETimeOffset && !isNaN(MSETimeOffset)) {
-            waitForUpdateEnd(() => {
-                buffer.timestampOffset = MSETimeOffset;
-            });
-        }
-    }
-
-    function remove(start, end, forceRemoval) {
-        const sourceBufferSink = this;
-        // make sure that the given time range is correct. Otherwise we will get InvalidAccessError
-        waitForUpdateEnd(function () {
-            try {
-                if ((start >= 0) && (end > start) && (forceRemoval || mediaSource.readyState !== 'ended')) {
-                    buffer.remove(start, end);
-                }
-                // updating is in progress, we should wait for it to complete before signaling that this operation is done
-                waitForUpdateEnd(function () {
-                    eventBus.trigger(Events.SOURCEBUFFER_REMOVE_COMPLETED, {
-                        buffer: sourceBufferSink,
-                        from: start,
-                        to: end,
-                        unintended: false
-                    });
+    function append(chunk, request = null) {
+        return new Promise((resolve, reject) => {
+            if (!chunk) {
+                reject({
+                    chunk: chunk,
+                    error: new DashJSError(Errors.APPEND_ERROR_CODE, Errors.APPEND_ERROR_MESSAGE)
                 });
-            } catch (err) {
-                eventBus.trigger(Events.SOURCEBUFFER_REMOVE_COMPLETED, {
-                    buffer: sourceBufferSink,
-                    from: start,
-                    to: end,
-                    unintended: false,
-                    error: new DashJSError(err.code, err.message)
-                });
+                return;
             }
+            appendQueue.push({ data: chunk, promise: { resolve, reject }, request });
+            _waitForUpdateEnd(_appendNextInQueue.bind(this));
         });
     }
 
-    function appendNextInQueue() {
-        const sourceBufferSink = this;
+    function abortBeforeAppend() {
+        return new Promise((resolve) => {
+            _waitForUpdateEnd(() => {
+                // Save the append window, which is reset on abort().
+                const appendWindowStart = buffer.appendWindowStart;
+                const appendWindowEnd = buffer.appendWindowEnd;
+
+                if (buffer) {
+                    buffer.abort();
+                    buffer.appendWindowStart = appendWindowStart;
+                    buffer.appendWindowEnd = appendWindowEnd;
+                }
+                resolve();
+            });
+        });
+    }
+
+    function remove(range) {
+        return new Promise((resolve, reject) => {
+            const start = range.start;
+            const end = range.end;
+
+            // make sure that the given time range is correct. Otherwise we will get InvalidAccessError
+            if (!((start >= 0) && (end > start))) {
+                resolve();
+                return;
+            }
+
+            _waitForUpdateEnd(function () {
+                try {
+                    buffer.remove(start, end);
+                    // updating is in progress, we should wait for it to complete before signaling that this operation is done
+                    _waitForUpdateEnd(function () {
+                        resolve({
+                            from: start,
+                            to: end,
+                            unintended: false
+                        });
+                        if (range.resolve) {
+                            range.resolve();
+                        }
+                    });
+                } catch (err) {
+                    reject({
+                        from: start,
+                        to: end,
+                        unintended: false,
+                        error: new DashJSError(Errors.REMOVE_ERROR_CODE, Errors.REMOVE_ERROR_MESSAGE)
+                    });
+                    if (range.reject) {
+                        range.reject(err);
+                    }
+                }
+            });
+        });
+    }
+
+    function _appendNextInQueue() {
+        if (isAppendingInProgress) {
+            return;
+        }
 
         if (appendQueue.length > 0) {
             isAppendingInProgress = true;
             const nextChunk = appendQueue[0];
-            appendQueue.splice(0,1);
-            let oldRanges = [];
+            appendQueue.splice(0, 1);
+
             const afterSuccess = function () {
-                // Safari sometimes drops a portion of a buffer after appending. Handle these situations here
-                const newRanges = getAllBufferRanges();
-                checkBufferGapsAfterAppend(sourceBufferSink, oldRanges, newRanges, nextChunk);
+                isAppendingInProgress = false;
                 if (appendQueue.length > 0) {
-                    appendNextInQueue.call(this);
-                } else {
-                    isAppendingInProgress = false;
-                    if (onAppended) {
-                        onAppended({
-                            chunk: nextChunk
-                        });
-                    }
+                    _appendNextInQueue.call(this);
                 }
+                // Init segments are cached. In any other case we dont need the chunk bytes anymore and can free the memory
+                if (nextChunk && nextChunk.data && nextChunk.data.segmentType && nextChunk.data.segmentType !== HTTPRequest.INIT_SEGMENT_TYPE) {
+                    delete nextChunk.data.bytes;
+                }
+                nextChunk.promise.resolve({ chunk: nextChunk.data });
             };
 
             try {
-                if (nextChunk.bytes.length === 0) {
+                lastRequestAppended = nextChunk.request;
+                if (nextChunk.data.bytes.byteLength === 0) {
                     afterSuccess.call(this);
                 } else {
-                    oldRanges = getAllBufferRanges();
+                    try {
+                        logger.debug(`Appending ${nextChunk.data.segmentType} from period ${nextChunk.data.streamId} to buffer. Request URL: ${nextChunk.request.url}, Representation: ID: ${nextChunk.data.representation.id}, bitrate: ${nextChunk.data.representation.bitrateInKbit}`)
+                    } catch (e) {
+
+                    }
                     if (buffer.appendBuffer) {
-                        buffer.appendBuffer(nextChunk.bytes);
+                        buffer.appendBuffer(nextChunk.data.bytes);
                     } else {
-                        buffer.append(nextChunk.bytes, nextChunk);
+                        buffer.append(nextChunk.data.bytes, nextChunk.data);
                     }
                     // updating is in progress, we should wait for it to complete before signaling that this operation is done
-                    waitForUpdateEnd(afterSuccess.bind(this));
+                    _waitForUpdateEnd(afterSuccess.bind(this));
                 }
             } catch (err) {
                 logger.fatal('SourceBuffer append failed "' + err + '"');
                 if (appendQueue.length > 0) {
-                    appendNextInQueue();
+                    _appendNextInQueue();
                 } else {
                     isAppendingInProgress = false;
                 }
 
-                if (onAppended) {
-                    onAppended({
-                        chunk: nextChunk,
-                        error: new DashJSError(err.code, err.message)
-                    });
-                }
+                delete nextChunk.data.bytes;
+                nextChunk.promise.reject({ chunk: nextChunk.data, error: new DashJSError(err.code, err.message) });
             }
         }
-    }
-
-    function checkBufferGapsAfterAppend(buffer, oldRanges, newRanges, chunk) {
-        if (oldRanges && oldRanges.length > 0 && oldRanges.length < newRanges.length &&
-            isChunkAlignedWithRange(oldRanges, chunk)) {
-            // A split in the range was created while appending
-            eventBus.trigger(Events.SOURCEBUFFER_REMOVE_COMPLETED, {
-                buffer: buffer,
-                from: newRanges.end(newRanges.length - 2),
-                to: newRanges.start(newRanges.length - 1),
-                unintended: true
-            });
-        }
-    }
-
-    function isChunkAlignedWithRange(oldRanges, chunk) {
-        for (let i = 0; i < oldRanges.length; i++ ) {
-            const start = Math.round(oldRanges.start(i));
-            const end = Math.round(oldRanges.end(i));
-            if (end === chunk.start || start === chunk.end || (chunk.start >= start && chunk.end <= end) ) {
-                return true;
-            }
-        }
-        return false;
     }
 
     function abort() {
-        try {
-            if (mediaSource.readyState === 'open') {
-                buffer.abort();
-            } else if (buffer.setTextTrack && mediaSource.readyState === 'ended') {
-                buffer.abort(); //The cues need to be removed from the TextSourceBuffer via a call to abort()
+        return new Promise((resolve) => {
+            try {
+                appendQueue = [];
+                if (mediaSource.readyState === 'open') {
+                    _waitForUpdateEnd(() => {
+                        try {
+                            if (buffer) {
+                                buffer.abort();
+                            }
+                            resolve();
+                        } catch (e) {
+                            resolve();
+                        }
+                    });
+                } else if (buffer && buffer.setTextTrack && mediaSource.readyState === 'ended') {
+                    buffer.abort(); //The cues need to be removed from the TextSourceBuffer via a call to abort()
+                    resolve();
+                } else {
+                    resolve();
+                }
+            } catch (e) {
+                resolve();
             }
-        } catch (ex) {
-            logger.error('SourceBuffer append abort failed: "' + ex + '"');
-        }
-        appendQueue = [];
+        });
     }
 
-    function executeCallback() {
+    function _executeCallback() {
         if (callbacks.length > 0) {
-            const cb = callbacks.shift();
-            if (buffer.updating) {
-                waitForUpdateEnd(cb);
-            } else {
+            if (!buffer.updating) {
+                const cb = callbacks.shift();
                 cb();
                 // Try to execute next callback if still not updating
-                executeCallback();
+                _executeCallback();
             }
         }
     }
 
-    function checkIsUpdateEnded() {
+    function _updateEndHandler() {
         // if updating is still in progress do nothing and wait for the next check again.
-        if (buffer.updating) return;
+        if (buffer.updating) {
+            return;
+        }
+
         // updating is completed, now we can stop checking and resolve the promise
-        executeCallback();
+        _executeCallback();
     }
 
-    function updateEndHandler() {
-        if (buffer.updating) return;
-
-        executeCallback();
+    function _errHandler(e) {
+        const error = e.target || {};
+        _triggerEvent(Events.SOURCE_BUFFER_ERROR, { error, lastRequestAppended })
     }
 
-    function errHandler() {
-        logger.error('SourceBufferSink error', mediaInfo.type);
+    function _triggerEvent(eventType, data) {
+        let payload = data || {};
+        eventBus.trigger(eventType, payload, { streamId: mediaInfo.streamInfo.id, mediaType: type });
     }
 
-    function waitForUpdateEnd(callback) {
-        callbacks.push(callback);
+    function _waitForUpdateEnd(callback) {
+        try {
+            callbacks.push(callback);
 
-        if (!buffer.updating) {
-            executeCallback();
+            if (!buffer.updating) {
+                _executeCallback();
+            }
+        } catch (e) {
+            logger.error(e);
         }
     }
 
     instance = {
-        getAllBufferRanges: getAllBufferRanges,
-        getBuffer: getBuffer,
-        append: append,
-        remove: remove,
-        abort: abort,
-        reset: reset,
-        updateTimestampOffset: updateTimestampOffset,
-        hasDiscontinuitiesAfter: hasDiscontinuitiesAfter,
-        waitForUpdateEnd: waitForUpdateEnd
+        abort,
+        abortBeforeAppend,
+        append,
+        changeType,
+        getAllBufferRanges,
+        getBuffer,
+        getType,
+        initializeForFirstUse,
+        initializeForStreamSwitch,
+        remove,
+        removeEventListeners,
+        reset,
+        updateAppendWindow,
+        updateTimestampOffset,
     };
 
     setup();

@@ -1,4 +1,4 @@
-import RepresentationControllerMock from './RepresentationControllerMock';
+import RepresentationControllerMock from './RepresentationControllerMock.js';
 
 class FragmentModelMock {
     constructor() {
@@ -66,7 +66,8 @@ function StreamProcessorMock (testType, streamInfo) {
         return {
             bitrateList: [],
             mimeType: 'video/mp4',
-            streamInfo: this.streamInfo
+            streamInfo: this.streamInfo,
+            type: 'video'
         };
     };
 
@@ -98,11 +99,11 @@ function StreamProcessorMock (testType, streamInfo) {
         return this.streamInfo;
     };
 
-    this.getRepresentationInfo = function (quality) {
+    this.getRepresentation = function (quality) {
         if (quality !== undefined) {
             let offset = quality ? 2 : 1;
             return {
-                MSETimeOffset: offset
+                mseTimeOffset: offset
             };
         } else {
             return {mediaInfo: {type: this.type, streamInfo: this.streamInfo}, fragmentDuration: 6};
@@ -113,9 +114,13 @@ function StreamProcessorMock (testType, streamInfo) {
         return this.bufferController.getIsBufferingCompleted();
     };
 
-    this.switchInitData = function () {};
+    this.appendInitSegment = function () {};
 
     this.reset = function () {};
+
+    this.probeNextRequest = function () {
+        return { url: 'http://test.url/next_object', range: '100-500' };
+    };
 }
 
 export default StreamProcessorMock;

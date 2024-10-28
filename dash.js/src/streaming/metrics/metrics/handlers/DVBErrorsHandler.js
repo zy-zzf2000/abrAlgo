@@ -29,7 +29,8 @@
  *  POSSIBILITY OF SUCH DAMAGE.
  */
 
-import MetricsReportingEvents from '../../MetricsReportingEvents';
+import MetricsReportingEvents from '../../MetricsReportingEvents.js';
+import FactoryMaker from '../../../../core/FactoryMaker.js';
 
 function DVBErrorsHandler(config) {
 
@@ -50,9 +51,7 @@ function DVBErrorsHandler(config) {
 
         // Note: A Player becoming a reporting Player is itself
         // something which is recorded by the DVBErrors metric.
-        eventBus.trigger(
-            MetricsReportingEvents.BECAME_REPORTING_PLAYER
-        );
+        eventBus.trigger(MetricsReportingEvents.BECAME_REPORTING_PLAYER);
     }
 
     function initialize(unused, rc) {
@@ -89,4 +88,4 @@ function DVBErrorsHandler(config) {
     return instance;
 }
 
-export default dashjs.FactoryMaker.getClassFactory(DVBErrorsHandler); /* jshint ignore:line */
+export default FactoryMaker.getClassFactory(DVBErrorsHandler); 

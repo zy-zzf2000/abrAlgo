@@ -28,16 +28,18 @@
  *  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  *  POSSIBILITY OF SUCH DAMAGE.
  */
-import CommonEncryption from './../CommonEncryption';
-import KeySystemClearKey from './../drm/KeySystemClearKey';
-import KeySystemW3CClearKey from './../drm/KeySystemW3CClearKey';
-import KeySystemWidevine from './../drm/KeySystemWidevine';
-import KeySystemPlayReady from './../drm/KeySystemPlayReady';
-import DRMToday from './../servers/DRMToday';
-import PlayReady from './../servers/PlayReady';
-import Widevine from './../servers/Widevine';
-import ClearKey from './../servers/ClearKey';
-import ProtectionConstants from '../../constants/ProtectionConstants';
+import CommonEncryption from './../CommonEncryption.js';
+import KeySystemClearKey from './../drm/KeySystemClearKey.js';
+import KeySystemW3CClearKey from './../drm/KeySystemW3CClearKey.js';
+import KeySystemWidevine from './../drm/KeySystemWidevine.js';
+import KeySystemPlayReady from './../drm/KeySystemPlayReady.js';
+import DRMToday from './../servers/DRMToday.js';
+import PlayReady from './../servers/PlayReady.js';
+import Widevine from './../servers/Widevine.js';
+import ClearKey from './../servers/ClearKey.js';
+import ProtectionConstants from '../../constants/ProtectionConstants.js';
+import FactoryMaker from '../../../core/FactoryMaker.js';
+import KeySystemMetadata from '../vo/KeySystemMetadata.js';
 
 /**
  * @module ProtectionKeyController
@@ -53,11 +55,14 @@ function ProtectionKeyController() {
         logger,
         keySystems,
         BASE64,
+        settings,
         clearkeyKeySystem,
         clearkeyW3CKeySystem;
 
     function setConfig(config) {
-        if (!config) return;
+        if (!config) {
+            return;
+        }
 
         if (config.debug) {
             debug = config.debug;
@@ -67,6 +72,10 @@ function ProtectionKeyController() {
         if (config.BASE64) {
             BASE64 = config.BASE64;
         }
+
+        if (config.settings) {
+            settings = config.settings
+        }
     }
 
     function initialize() {
@@ -75,20 +84,20 @@ function ProtectionKeyController() {
         let keySystem;
 
         // PlayReady
-        keySystem = KeySystemPlayReady(context).getInstance({ BASE64: BASE64 });
+        keySystem = KeySystemPlayReady(context).getInstance({BASE64: BASE64, settings: settings});
         keySystems.push(keySystem);
 
         // Widevine
-        keySystem = KeySystemWidevine(context).getInstance({ BASE64: BASE64 });
+        keySystem = KeySystemWidevine(context).getInstance({BASE64: BASE64});
         keySystems.push(keySystem);
 
         // ClearKey
-        keySystem = KeySystemClearKey(context).getInstance({ BASE64: BASE64 });
+        keySystem = KeySystemClearKey(context).getInstance({BASE64: BASE64});
         keySystems.push(keySystem);
         clearkeyKeySystem = keySystem;
 
         // W3C ClearKey
-        keySystem = KeySystemW3CClearKey(context).getInstance({ BASE64: BASE64, debug: debug });
+        keySystem = KeySystemW3CClearKey(context).getInstance({BASE64: BASE64, debug: debug});
         keySystems.push(keySystem);
         clearkeyW3CKeySystem = keySystem;
     }
@@ -189,72 +198,94 @@ function ProtectionKeyController() {
      * key systems that are supported by this player will be returned.
      * Key systems are returned in priority order (highest first).
      *
-     * @param {Array.<Object>} cps - array of content protection elements parsed
+     * @param {Array.<Object>} contentProtectionElements - array of content protection elements parsed
      * from the manifest
+     * @param {ProtectionData} applicationSpecifiedProtectionData user specified protection data - license server url etc
+     * supported by the content
+     * @param {string} sessionType session type
      * @returns {Array.<Object>} array of objects indicating which supported key
-     * systems were found.  Empty array is returned if no
-     * supported key systems were found
+     * systems were found.  Empty array is returned if no supported key systems were found
      * @memberof module:ProtectionKeyController
      * @instance
      */
-    function getSupportedKeySystemsFromContentProtection(cps) {
-        let cp, ks, ksIdx, cpIdx;
+    function getSupportedKeySystemMetadataFromContentProtection(contentProtectionElements, applicationSpecifiedProtectionData, sessionType) {
+        let contentProtectionElement, keySystem, ksIdx, cpIdx;
         let supportedKS = [];
 
-        if (cps) {
-            for (ksIdx = 0; ksIdx < keySystems.length; ++ksIdx) {
-                ks = keySystems[ksIdx];
-                for (cpIdx = 0; cpIdx < cps.length; ++cpIdx) {
-                    cp = cps[cpIdx];
-                    if (cp.schemeIdUri.toLowerCase() === ks.schemeIdURI) {
-                        // Look for DRM-specific ContentProtection
-                        let initData = ks.getInitData(cp);
+        if (!contentProtectionElements || !contentProtectionElements.length) {
+            return supportedKS
+        }
 
-                        supportedKS.push({
-                            ks: keySystems[ksIdx],
-                            initData: initData,
-                            cdmData: ks.getCDMData(),
-                            sessionId: ks.getSessionId(cp)
-                        });
+        const mp4ProtectionElement = CommonEncryption.findMp4ProtectionElement(contentProtectionElements);
+        for (ksIdx = 0; ksIdx < keySystems.length; ksIdx++) {
+            keySystem = keySystems[ksIdx];
+
+            // Get protection data that applies for current key system
+            const protData = _getProtDataForKeySystem(keySystem.systemString, applicationSpecifiedProtectionData);
+
+            for (cpIdx = 0; cpIdx < contentProtectionElements.length; cpIdx++) {
+                contentProtectionElement = contentProtectionElements[cpIdx];
+                if (contentProtectionElement.schemeIdUri.toLowerCase() === keySystem.schemeIdURI) {
+                    // Look for DRM-specific ContentProtection
+                    let initData = keySystem.getInitData(contentProtectionElement, mp4ProtectionElement);
+                    const keySystemMetadata = new KeySystemMetadata({
+                        ks: keySystems[ksIdx],
+                        keyId: contentProtectionElement.keyId,
+                        initData: initData,
+                        protData: protData,
+                        cdmData: keySystem.getCDMData(protData ? protData.cdmData : null),
+                        sessionId: _getSessionId(protData, contentProtectionElement),
+                        sessionType: _getSessionType(protData, sessionType)
+                    })
+
+                    if (protData) {
+                        supportedKS.unshift(keySystemMetadata);
+                    } else {
+                        supportedKS.push(keySystemMetadata);
                     }
                 }
             }
         }
+
         return supportedKS;
     }
 
     /**
      * Returns key systems supported by this player for the given PSSH
-     * initializationData. Only key systems supported by this player
-     * that have protection data present will be returned.  Key systems are returned in priority order
+     * initializationData. Key systems are returned in priority order
      * (highest priority first)
      *
      * @param {ArrayBuffer} initData Concatenated PSSH data for all DRMs
      * supported by the content
      * @param {ProtectionData} protDataSet user specified protection data - license server url etc
      * supported by the content
+     * @param {string} default session type
      * @returns {Array.<Object>} array of objects indicating which supported key
      * systems were found.  Empty array is returned if no
      * supported key systems were found
      * @memberof module:ProtectionKeyController
      * @instance
      */
-    function getSupportedKeySystems(initData, protDataSet) {
+    function getSupportedKeySystemsFromSegmentPssh(initData, protDataSet, sessionType) {
         let supportedKS = [];
         let pssh = CommonEncryption.parsePSSHList(initData);
-        let ks, keySystemString, shouldNotFilterOutKeySystem;
+        let ks, keySystemString;
 
         for (let ksIdx = 0; ksIdx < keySystems.length; ++ksIdx) {
             ks = keySystems[ksIdx];
             keySystemString = ks.systemString;
-            shouldNotFilterOutKeySystem = (protDataSet) ? keySystemString in protDataSet : true;
 
-            if (ks.uuid in pssh && shouldNotFilterOutKeySystem) {
+            // Get protection data that applies for current key system
+            const protData = _getProtDataForKeySystem(keySystemString, protDataSet);
+
+            if (ks.uuid in pssh) {
                 supportedKS.push({
                     ks: ks,
                     initData: pssh[ks.uuid],
-                    cdmData: ks.getCDMData(),
-                    sessionId: ks.getSessionId()
+                    protData: protData,
+                    cdmData: ks.getCDMData(protData ? protData.cdmData : null),
+                    sessionId: _getSessionId(protData),
+                    sessionType: _getSessionType(protData, sessionType)
                 });
             }
         }
@@ -278,17 +309,17 @@ function ProtectionKeyController() {
      * @instance
      *
      */
-    function getLicenseServer(keySystem, protData, messageType) {
+    function getLicenseServerModelInstance(keySystem, protData, messageType) {
 
         // Our default server implementations do not do anything with "license-release" or
         // "individualization-request" messages, so we just send a success event
-        if (messageType === 'license-release' || messageType === 'individualization-request') {
+        if (messageType === ProtectionConstants.MEDIA_KEY_MESSAGE_TYPES.LICENSE_RELEASE || messageType === ProtectionConstants.MEDIA_KEY_MESSAGE_TYPES.INDIVIDUALIZATION_REQUEST) {
             return null;
         }
 
         let licenseServerData = null;
         if (protData && protData.hasOwnProperty('drmtoday')) {
-            licenseServerData = DRMToday(context).getInstance({ BASE64: BASE64 });
+            licenseServerData = DRMToday(context).getInstance({BASE64: BASE64});
         } else if (keySystem.systemString === ProtectionConstants.WIDEVINE_KEYSTEM_STRING) {
             licenseServerData = Widevine(context).getInstance();
         } else if (keySystem.systemString === ProtectionConstants.PLAYREADY_KEYSTEM_STRING) {
@@ -338,23 +369,44 @@ function ProtectionKeyController() {
         }
     }
 
+    function _getProtDataForKeySystem(systemString, protDataSet) {
+        if (!protDataSet) {
+            return null;
+        }
+        return (systemString in protDataSet) ? protDataSet[systemString] : null;
+    }
+
+    function _getSessionId(protData, cp) {
+        // Get sessionId from protectionData or from manifest (ContentProtection)
+        if (protData && protData.sessionId) {
+            return protData.sessionId;
+        } else if (cp && cp.sessionId) {
+            return cp.sessionId;
+        }
+        return null;
+    }
+
+    function _getSessionType(protData, sessionType) {
+        return (protData && protData.sessionType) ? protData.sessionType : sessionType;
+    }
+
     instance = {
-        initialize: initialize,
-        setProtectionData: setProtectionData,
-        isClearKey: isClearKey,
-        initDataEquals: initDataEquals,
-        getKeySystems: getKeySystems,
-        setKeySystems: setKeySystems,
-        getKeySystemBySystemString: getKeySystemBySystemString,
-        getSupportedKeySystemsFromContentProtection: getSupportedKeySystemsFromContentProtection,
-        getSupportedKeySystems: getSupportedKeySystems,
-        getLicenseServer: getLicenseServer,
-        processClearKeyLicenseRequest: processClearKeyLicenseRequest,
-        setConfig: setConfig
+        getKeySystemBySystemString,
+        getKeySystems,
+        getLicenseServerModelInstance,
+        getSupportedKeySystemMetadataFromContentProtection,
+        getSupportedKeySystemsFromSegmentPssh,
+        initDataEquals,
+        initialize,
+        isClearKey,
+        processClearKeyLicenseRequest,
+        setConfig,
+        setKeySystems,
+        setProtectionData,
     };
 
     return instance;
 }
 
 ProtectionKeyController.__dashjs_factory_name = 'ProtectionKeyController';
-export default dashjs.FactoryMaker.getSingletonFactory(ProtectionKeyController); /* jshint ignore:line */
+export default FactoryMaker.getSingletonFactory(ProtectionKeyController);

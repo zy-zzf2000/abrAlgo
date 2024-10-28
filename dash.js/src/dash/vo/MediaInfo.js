@@ -34,38 +34,33 @@
  */
 class MediaInfo {
     constructor() {
+        this.accessibility = null;
+        this.adaptationSetSwitchingCompatibleIds = [];
+        this.audioChannelConfiguration = null;
+        this.bitrateList = null;
+        this.codec = null;
+        this.contentProtection = null;
+        this.essentialProperties = [];
         this.id = null;
         this.index = null;
-        this.type = null;
-        this.streamInfo = null;
-        this.representationCount = 0;
-        this.lang = null;
-        this.viewpoint = null;
-        this.accessibility = null;
-        this.audioChannelConfiguration = null;
-        this.roles = null;
-        this.codec = null;
-        this.mimeType = null;
-        this.contentProtection = null;
+        this.isEmbedded = null;
+        this.isFragmented = null;
         this.isText = false;
-        this.KID = null;
-        this.bitrateList = null;
+        this.labels = null;
+        this.lang = null;
+        this.mimeType = null;
+        this.normalizedKeyIds = new Set();
+        this.representationCount = 0;
+        this.roles = null;
+        this.segmentAlignment = false;
+        this.selectionPriority = 1;
+        this.streamInfo = null;
+        this.subSegmentAlignment = false;
+        this.supplementalProperties = [];
+        this.type = null;
+        this.viewpoint = null;
     }
 
-    isMediaInfoEqual(mediaInfo) {
-        if (!mediaInfo) {
-            return false;
-        }
-
-        const sameId = this.id === mediaInfo.id;
-        const sameViewpoint = this.viewpoint === mediaInfo.viewpoint;
-        const sameLang = this.lang === mediaInfo.lang;
-        const sameRoles = this.roles.toString() === mediaInfo.roles.toString();
-        const sameAccessibility = this.accessibility.toString() === mediaInfo.accessibility.toString();
-        const sameAudioChannelConfiguration = this.audioChannelConfiguration.toString() === mediaInfo.audioChannelConfiguration.toString();
-
-        return (sameId && sameViewpoint && sameLang && sameRoles && sameAccessibility && sameAudioChannelConfiguration);
-    }
 }
 
 export default MediaInfo;

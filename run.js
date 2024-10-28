@@ -4,7 +4,7 @@ const normalNetworkPatterns = require("./normal-network-patterns.js");
 const fastNetworkPatterns = require("./fast-network-patterns.js");
 const stats = require("./stats");
 const CHROME_PATH ="C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
-const CUR_MODEL = "LOLP"
+const CUR_MODEL = "RMPC"
 let patterns;
 if (process.env.npm_package_config_ffmpeg_profile === 'PROFILE_FAST') {
   patterns = fastNetworkPatterns;
@@ -46,19 +46,26 @@ async function run() {
     consoleLogs.push(msg.text());
   });
 
-  await page.goto("http://localhost:3000/samples/low-latency/index.html");
-  const cdpClient = await page.target().createCDPSession();
+  await page.goto("http://localhost:3000/samples/low-latency/testplayer/testplayer.html");
 
+
+
+  // 等待“Load stream”按钮加载
+  await page.waitForSelector('#load-button'); // 使用按钮的实际选择器
+  await page.click('#load-button'); // 点击按钮
+  await page.waitForFunction(() => window.startRecording !== undefined);
+
+  const cdpClient = await page.target().createCDPSession();
   console.log("Waiting for player to setup.");
   await page.evaluate(() => {
     return new Promise(resolve => {
-      const hasLoaded = player.getBitrateInfoListFor("video").length !== 0;
+      const hasLoaded = window.app.player.getRepresentationsByType("video").length !== 0;
       if (hasLoaded) {
         console.log('Stream loaded, setup complete.');
         resolve();
       } else {
         console.log('Waiting for stream to load.');
-        player.on(dashjs.MediaPlayer.events.STREAM_INITIALIZED, (e) => {
+        window.app.player.on(dashjs.MediaPlayer.events.STREAM_INITIALIZED, (e) => {
           console.log('Load complete.')
           resolve();
       });
@@ -86,7 +93,7 @@ async function run() {
       // Guard against closing the browser window early
       window.stopRecording();
     }
-    player.pause();
+    window.app.player.pause();
     return window.abrHistory;
   });
   console.log("Run complete");
@@ -95,7 +102,9 @@ async function run() {
     console.log(msg);
   }, logMessage);
 
-  const logFileName = `${Date.now()}_console_logs.txt`;
+
+  ts = Date.now();
+  const logFileName = ts + "_" + CUR_MODEL + "_console_log.log";
   fs.writeFileSync(`./results/${logFileName}`, consoleLogs.join('\n'));
   if (!metrics) {
     console.log("No metrics were returned. Stats will not be logged.");
@@ -114,14 +123,18 @@ async function awaitStabilization (page) {
   return await page.evaluate(() => {
     console.log('Awaiting stabilization...')
     return new Promise(resolve => {
-      const maxQuality = player.getBitrateInfoListFor("video").length - 1;
+      const maxQuality = window.app.player.getRepresentationsByType("video").length - 1;
+      console.log('Max quality:', maxQuality);
       let timer = -1;
 
       const failTimer = setTimeout(() => {
         resolve(false);
       }, 30000)
 
-      if (player.getQualityFor("video") === maxQuality) {
+      console.log('Current quality:', window.app.player.getCurrentRepresentationForType("video").absoluteIndex);
+      console.log('the result is: ',window.app.player.getCurrentRepresentationForType("video").absoluteIndex === maxQuality)
+
+      if (window.app.player.getCurrentRepresentationForType("video").absoluteIndex === maxQuality) {
         console.log('Starting stabilization timer...')
         timer = setTimeout(() => {
           clearTimeout(failTimer);
@@ -129,9 +142,9 @@ async function awaitStabilization (page) {
         }, 10000);
       }
 
-      player.on(dashjs.MediaPlayer.events.QUALITY_CHANGE_RENDERED, e => {
+      window.app.player.on(dashjs.MediaPlayer.events.QUALITY_CHANGE_RENDERED, e => {
         console.warn("Quality changed requested", e);
-        if (e.newQuality !== maxQuality) {
+        if (e.newRepresentation.absoluteIndex !== maxQuality) {
           console.log('Clearing stabilization timer...', e.newQuality, maxQuality)
           clearTimeout(timer);
           timer = -1;

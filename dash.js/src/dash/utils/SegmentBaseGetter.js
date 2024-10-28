@@ -29,9 +29,8 @@
  *  POSSIBILITY OF SUCH DAMAGE.
  */
 
-import FactoryMaker from '../../core/FactoryMaker';
-import Constants from '../../streaming/constants/Constants';
-
+import FactoryMaker from '../../core/FactoryMaker.js';
+import Constants from '../../streaming/constants/Constants.js';
 
 function SegmentBaseGetter(config) {
 
@@ -46,6 +45,18 @@ function SegmentBaseGetter(config) {
         }
     }
 
+    function getMediaFinishedInformation(representation) {
+        const mediaFinishedInformation = { numberOfSegments: 0, mediaTimeOfLastSignaledSegment: NaN }
+
+        if (!representation || !representation.segments) {
+            return mediaFinishedInformation
+        }
+
+        mediaFinishedInformation.numberOfSegments = representation.segments.length;
+
+        return mediaFinishedInformation;
+    }
+
     function getSegmentByIndex(representation, index) {
         checkConfig();
 
@@ -57,7 +68,7 @@ function SegmentBaseGetter(config) {
         let seg;
         if (index < len) {
             seg = representation.segments[index];
-            if (seg && seg.availabilityIdx === index) {
+            if (seg && seg.index === index) {
                 return seg;
             }
         }
@@ -65,7 +76,7 @@ function SegmentBaseGetter(config) {
         for (let i = 0; i < len; i++) {
             seg = representation.segments[i];
 
-            if (seg && seg.availabilityIdx === index) {
+            if (seg && seg.index === index) {
                 return seg;
             }
         }
@@ -76,8 +87,7 @@ function SegmentBaseGetter(config) {
     function getSegmentByTime(representation, requestedTime) {
         checkConfig();
 
-        const periodTime = timelineConverter.calcPeriodRelativeTimeFromMpdRelativeTime(representation, requestedTime);
-        const index = getIndexByTime(representation, periodTime);
+        const index = getIndexByTime(representation, requestedTime);
 
         return getSegmentByIndex(representation, index);
     }
@@ -92,21 +102,21 @@ function SegmentBaseGetter(config) {
 
         let idx = -1;
         let epsilon,
-            frag,
+            seg,
             ft,
             fd,
             i;
 
         if (segments && ln > 0) {
             for (i = 0; i < ln; i++) {
-                frag = segments[i];
-                ft = frag.presentationStartTime;
-                fd = frag.duration;
+                seg = segments[i];
+                ft = seg.presentationStartTime;
+                fd = seg.duration;
 
                 epsilon = fd / 2;
                 if ((time + epsilon) >= ft &&
                     (time - epsilon) < (ft + fd)) {
-                    idx = frag.availabilityIdx;
+                    idx = seg.index;
                     break;
                 }
             }
@@ -116,8 +126,9 @@ function SegmentBaseGetter(config) {
     }
 
     instance = {
-        getSegmentByIndex: getSegmentByIndex,
-        getSegmentByTime: getSegmentByTime
+        getSegmentByIndex,
+        getSegmentByTime,
+        getMediaFinishedInformation
     };
 
     return instance;

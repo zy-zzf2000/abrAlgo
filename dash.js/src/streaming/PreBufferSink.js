@@ -28,8 +28,8 @@
  *  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  *  POSSIBILITY OF SUCH DAMAGE.
  */
-import Debug from '../core/Debug';
-import FactoryMaker from '../core/FactoryMaker';
+import Debug from '../core/Debug.js';
+import FactoryMaker from '../core/FactoryMaker.js';
 
 /**
  * This is a sink that is used to temporarily hold onto media chunks before a video element is added.
@@ -61,7 +61,9 @@ function PreBufferSink(onAppendedCallback) {
     function append(chunk) {
         if (chunk.segmentType !== 'InitializationSegment') { //Init segments are stored in the initCache.
             chunks.push(chunk);
-            chunks.sort(function (a, b) { return a.start - b.start; });
+            chunks.sort(function (a, b) {
+                return a.start - b.start;
+            });
             outstandingInit = null;
         } else {//We need to hold an init chunk for when a corresponding media segment is being downloaded when the discharge happens.
             outstandingInit = chunk;
@@ -73,14 +75,17 @@ function PreBufferSink(onAppendedCallback) {
                 chunk: chunk
             });
         }
+        return Promise.resolve();
     }
 
     function remove(start, end) {
-        chunks = chunks.filter( a => !((isNaN(end) || a.start < end) && (isNaN(start) || a.end > start))); //The opposite of the getChunks predicate.
+        chunks = chunks.filter(a => !((isNaN(end) || a.start < end) && (isNaN(start) || a.end > start))); //The opposite of the getChunks predicate.
+        return Promise.resolve();
     }
 
     //Nothing async, nothing to abort.
     function abort() {
+        return Promise.resolve();
     }
 
     function getAllBufferRanges() {
@@ -89,7 +94,7 @@ function PreBufferSink(onAppendedCallback) {
         for (let i = 0; i < chunks.length; i++) {
             let chunk = chunks[i];
             if (ranges.length === 0 || chunk.start > ranges[ranges.length - 1].end) {
-                ranges.push({ start: chunk.start, end: chunk.end });
+                ranges.push({start: chunk.start, end: chunk.end});
             } else {
                 ranges[ranges.length - 1].end = chunk.end;
             }
@@ -114,12 +119,8 @@ function PreBufferSink(onAppendedCallback) {
         return timeranges;
     }
 
-    function hasDiscontinuitiesAfter() {
-        return false;
-    }
-
     function updateTimestampOffset() {
-        // Nothing to do
+        return Promise.resolve();
     }
 
     function getBuffer() {
@@ -148,7 +149,7 @@ function PreBufferSink(onAppendedCallback) {
     }
 
     function getChunksAt(start, end) {
-        return chunks.filter( a => ((isNaN(end) || a.start < end) && (isNaN(start) || a.end > start)) );
+        return chunks.filter(a => ((isNaN(end) || a.start < end) && (isNaN(start) || a.end > start)));
     }
 
     function waitForUpdateEnd(callback) {
@@ -156,16 +157,15 @@ function PreBufferSink(onAppendedCallback) {
     }
 
     instance = {
-        getAllBufferRanges: getAllBufferRanges,
-        append: append,
-        remove: remove,
-        abort: abort,
-        discharge: discharge,
-        reset: reset,
-        updateTimestampOffset: updateTimestampOffset,
-        hasDiscontinuitiesAfter: hasDiscontinuitiesAfter,
-        waitForUpdateEnd: waitForUpdateEnd,
-        getBuffer: getBuffer
+        getAllBufferRanges,
+        append,
+        remove,
+        abort,
+        discharge,
+        reset,
+        updateTimestampOffset,
+        waitForUpdateEnd,
+        getBuffer
     };
 
     setup();

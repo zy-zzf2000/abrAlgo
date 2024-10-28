@@ -28,31 +28,35 @@
  *  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  *  POSSIBILITY OF SUCH DAMAGE.
  */
-import EventBus from '../../core/EventBus';
-import Events from '../../core/events/Events';
-import FactoryMaker from '../../core/FactoryMaker';
+import EventBus from '../../core/EventBus.js';
+import Events from '../../core/events/Events.js';
+import FactoryMaker from '../../core/FactoryMaker.js';
+import DashConstants from '../constants/DashConstants.js';
+import DashManifestModel from '../models/DashManifestModel.js';
+import Settings from '../../core/Settings.js';
+import Constants from '../../streaming/constants/Constants.js';
+import MediaPlayerEvents from '../../streaming/MediaPlayerEvents.js';
+import ConformanceViolationConstants from '../../streaming/constants/ConformanceViolationConstants.js';
 
 function TimelineConverter() {
 
-    let context = this.context;
-    let eventBus = EventBus(context).getInstance();
+    const context = this.context;
+    const eventBus = EventBus(context).getInstance();
+    const settings = Settings(context).getInstance();
 
     let instance,
-        clientServerTimeShift,
-        isClientServerTimeSyncCompleted,
-        expectedLiveEdge;
+        dashManifestModel,
+        timelineAnchorAvailabilityOffset, // In case we calculate the TSBD using _calcTimeShiftBufferWindowForDynamicTimelineManifest we use the segments as anchor times. We apply this offset when calculating if a segment is available or not.
+        clientServerTimeShift;
+
+    function setup() {
+        dashManifestModel = DashManifestModel(context).getInstance();
+        reset();
+    }
 
     function initialize() {
         resetInitialSettings();
-        eventBus.on(Events.TIME_SYNCHRONIZATION_COMPLETED, onTimeSyncComplete, this);
-    }
-
-    function isTimeSyncCompleted() {
-        return isClientServerTimeSyncCompleted;
-    }
-
-    function setTimeSyncCompleted(value) {
-        isClientServerTimeSyncCompleted = value;
+        eventBus.on(Events.UPDATE_TIME_SYNC_OFFSET, _onUpdateTimeSyncOffset, this);
     }
 
     function getClientTimeOffset() {
@@ -63,44 +67,51 @@ function TimelineConverter() {
         clientServerTimeShift = value;
     }
 
-    function getExpectedLiveEdge() {
-        return expectedLiveEdge;
+    /**
+     * Returns a "now" reference time for the client to compare the availability time of a segment against.
+     * Takes the client/server drift into account
+     */
+    function getClientReferenceTime() {
+        return Date.now() - (timelineAnchorAvailabilityOffset * 1000) + (clientServerTimeShift * 1000);
     }
 
-    function setExpectedLiveEdge(value) {
-        expectedLiveEdge = value;
-    }
+    function _calcAvailabilityTimeFromPresentationTime(presentationEndTime, representation, isDynamic, calculateAvailabilityEndTime) {
+        let availabilityTime;
+        let mpd = representation.adaptation.period.mpd;
+        const availabilityStartTime = mpd.availabilityStartTime;
 
-    function calcAvailabilityTimeFromPresentationTime(presentationTime, mpd, isDynamic, calculateEnd) {
-        let availabilityTime = NaN;
-
-        if (calculateEnd) {
+        if (calculateAvailabilityEndTime) {
             //@timeShiftBufferDepth specifies the duration of the time shifting buffer that is guaranteed
             // to be available for a Media Presentation with type 'dynamic'.
             // When not present, the value is infinite.
-            if (isDynamic && (mpd.timeShiftBufferDepth != Number.POSITIVE_INFINITY)) {
-                availabilityTime = new Date(mpd.availabilityStartTime.getTime() + ((presentationTime + mpd.timeShiftBufferDepth) * 1000));
+            if (isDynamic && mpd.timeShiftBufferDepth !== Number.POSITIVE_INFINITY) {
+                // SAET = SAST + TSBD + seg@duration
+                availabilityTime = new Date(availabilityStartTime.getTime() + ((presentationEndTime + mpd.timeShiftBufferDepth) * 1000));
             } else {
                 availabilityTime = mpd.availabilityEndTime;
             }
         } else {
             if (isDynamic) {
-                availabilityTime = new Date(mpd.availabilityStartTime.getTime() + (presentationTime - clientServerTimeShift) * 1000);
+                // SAST = Period@start + seg@presentationStartTime + seg@duration
+                // ASAST = SAST - ATO
+                const availabilityTimeOffset = representation.availabilityTimeOffset;
+                // presentationEndTime = Period@start + seg@presentationStartTime + Segment@duration
+                availabilityTime = new Date(availabilityStartTime.getTime() + (presentationEndTime - availabilityTimeOffset) * 1000);
             } else {
                 // in static mpd, all segments are available at the same time
-                availabilityTime = mpd.availabilityStartTime;
+                availabilityTime = availabilityStartTime;
             }
         }
 
         return availabilityTime;
     }
 
-    function calcAvailabilityStartTimeFromPresentationTime(presentationTime, mpd, isDynamic) {
-        return calcAvailabilityTimeFromPresentationTime.call(this, presentationTime, mpd, isDynamic);
+    function calcAvailabilityStartTimeFromPresentationTime(presentationEndTime, representation, isDynamic) {
+        return _calcAvailabilityTimeFromPresentationTime(presentationEndTime, representation, isDynamic);
     }
 
-    function calcAvailabilityEndTimeFromPresentationTime(presentationTime, mpd, isDynamic) {
-        return calcAvailabilityTimeFromPresentationTime.call(this, presentationTime, mpd, isDynamic, true);
+    function calcAvailabilityEndTimeFromPresentationTime(presentationEndTime, representation, isDynamic) {
+        return _calcAvailabilityTimeFromPresentationTime(presentationEndTime, representation, isDynamic, true);
     }
 
     function calcPresentationTimeFromWallTime(wallTime, period) {
@@ -135,50 +146,212 @@ function TimelineConverter() {
         return wallTime;
     }
 
-    function calcSegmentAvailabilityRange(voRepresentation, isDynamic) {
-        // Static Range Finder
-        const voPeriod = voRepresentation.adaptation.period;
-        const range = { start: voPeriod.start, end: voPeriod.start + voPeriod.duration };
-        if (!isDynamic) return range;
-
-        if (!isClientServerTimeSyncCompleted && voRepresentation.segmentAvailabilityRange) {
-            return voRepresentation.segmentAvailabilityRange;
+    /**
+     * Calculates the timeshiftbuffer range. This range might overlap multiple periods and is not limited to period boundaries. However, we make sure that the range is potentially covered by period.
+     * @param {Array} streams
+     * @param {boolean} isDynamic
+     * @return {}
+     */
+    function calcTimeShiftBufferWindow(streams, isDynamic) {
+        // Static manifests. The availability window is equal to the DVR window
+        if (!isDynamic) {
+            return _calcTimeshiftBufferForStaticManifest(streams);
         }
 
-        // Dynamic Range Finder
-        const d = voRepresentation.segmentDuration || (voRepresentation.segments && voRepresentation.segments.length ? voRepresentation.segments[voRepresentation.segments.length - 1].duration : 0);
-        const now = calcPresentationTimeFromWallTime(new Date(), voPeriod);
-        const periodEnd = voPeriod.start + voPeriod.duration;
-        range.start = Math.max((now - voPeriod.mpd.timeShiftBufferDepth), voPeriod.start);
+        // Specific use case of SegmentTimeline
+        if (settings.get().streaming.timeShiftBuffer.calcFromSegmentTimeline) {
+            const data = _calcTimeShiftBufferWindowForDynamicTimelineManifest(streams);
+            _adjustTimelineAnchorAvailabilityOffset(data.now, data.range);
 
-        const endOffset = voRepresentation.availabilityTimeOffset !== undefined &&
-            voRepresentation.availabilityTimeOffset < d ? d - voRepresentation.availabilityTimeOffset : d;
+            return data.range;
+        }
 
-        range.end = now >= periodEnd && now - endOffset < periodEnd ? periodEnd : now - endOffset;
+        return _calcTimeShiftBufferWindowForDynamicManifest(streams);
+    }
+
+    function _calcTimeshiftBufferForStaticManifest(streams) {
+        // Static Range Finder. We iterate over all periods and return the total duration
+        const range = { start: NaN, end: NaN };
+        let duration = 0;
+        let start = NaN;
+        streams.forEach((stream) => {
+            const streamInfo = stream.getStreamInfo();
+            duration += streamInfo.duration;
+
+            if (isNaN(start) || streamInfo.start < start) {
+                start = streamInfo.start;
+            }
+        });
+
+        range.start = start;
+        range.end = start + duration;
 
         return range;
     }
 
-    function getPeriodEnd(voRepresentation, isDynamic) {
-        // Static Range Finder
-        const voPeriod = voRepresentation.adaptation.period;
-        if (!isDynamic) {
-            return voPeriod.start + voPeriod.duration;
+    function _calcTimeShiftBufferWindowForDynamicManifest(streams) {
+        const range = { start: NaN, end: NaN };
+
+        if (!streams || streams.length === 0) {
+            return range;
         }
 
-        if (!isClientServerTimeSyncCompleted && voRepresentation.segmentAvailabilityRange) {
-            return voRepresentation.segmentAvailabilityRange;
-        }
-
-        // Dynamic Range Finder
-        const d = voRepresentation.segmentDuration || (voRepresentation.segments && voRepresentation.segments.length ? voRepresentation.segments[voRepresentation.segments.length - 1].duration : 0);
+        const voPeriod = streams[0].getAdapter().getRegularPeriods()[0];
         const now = calcPresentationTimeFromWallTime(new Date(), voPeriod);
-        const periodEnd = voPeriod.start + voPeriod.duration;
+        const timeShiftBufferDepth = voPeriod.mpd.timeShiftBufferDepth;
+        const start = !isNaN(timeShiftBufferDepth) ? now - timeShiftBufferDepth : 0;
+        // check if we find a suitable period for that starttime. Otherwise, we use the time closest to that
+        range.start = _adjustTimeBasedOnPeriodRanges(streams, start);
+        range.end = !isNaN(range.start) && now < range.start ? now : _adjustTimeBasedOnPeriodRanges(streams, now, true);
 
-        const endOffset = voRepresentation.availabilityTimeOffset !== undefined &&
-            voRepresentation.availabilityTimeOffset < d ? d - voRepresentation.availabilityTimeOffset : d;
+        if (!isNaN(timeShiftBufferDepth) && range.end < now - timeShiftBufferDepth) {
+            range.end = NaN;
+        }
 
-        return Math.min(now - endOffset, periodEnd);
+        // If we have SegmentTimeline as a reference we can verify that the calculated DVR window is at least partially included in the DVR window exposed by the timeline.
+        // If that is not the case we stick to the DVR window defined by SegmentTimeline
+        if (settings.get().streaming.timeShiftBuffer.fallbackToSegmentTimeline) {
+            const timelineRefData = _calcTimeShiftBufferWindowForDynamicTimelineManifest(streams);
+            if (timelineRefData.range.end < range.start) {
+                eventBus.trigger(MediaPlayerEvents.CONFORMANCE_VIOLATION, {
+                    level: ConformanceViolationConstants.LEVELS.WARNING,
+                    event: ConformanceViolationConstants.EVENTS.INVALID_DVR_WINDOW
+                });
+                _adjustTimelineAnchorAvailabilityOffset(timelineRefData.now, timelineRefData.range);
+                return timelineRefData.range;
+            }
+        }
+
+        return range;
+    }
+
+    function _calcTimeShiftBufferWindowForDynamicTimelineManifest(streams) {
+        const range = { start: NaN, end: NaN };
+        const voPeriod = streams[0].getAdapter().getRegularPeriods()[0];
+        const now = calcPresentationTimeFromWallTime(new Date(), voPeriod);
+
+        if (!streams || streams.length === 0) {
+            return { range, now };
+        }
+
+        streams.forEach((stream) => {
+            let voRepresentation = stream.getCurrentRepresentationForType(Constants.VIDEO);
+            if (!voRepresentation) {
+                voRepresentation = stream.getCurrentRepresentationForType(Constants.AUDIO)
+            }
+
+            // If we still got not voRepresentation we are in the startup phase and nothing was selected yet. Use the default Representation
+            if (!voRepresentation) {
+                const adapter = stream.getAdapter();
+                const mediaInfo = adapter.getMediaInfoForType(stream.getStreamInfo(), Constants.VIDEO) || adapter.getMediaInfoForType(stream.getStreamInfo(), Constants.AUDIO);
+                const voRepresentations = adapter.getVoRepresentations(mediaInfo);
+                voRepresentation = voRepresentations[0];
+            }
+
+            let periodRange = { start: NaN, end: NaN };
+
+            if (voRepresentation) {
+                if (voRepresentation.segmentInfoType === DashConstants.SEGMENT_TIMELINE) {
+                    periodRange = _calcRangeForTimeline(voRepresentation);
+                } else {
+                    const currentVoPeriod = voRepresentation.adaptation.period;
+                    periodRange.start = currentVoPeriod.start;
+                    periodRange.end = Math.max(now, currentVoPeriod.start + currentVoPeriod.duration);
+                }
+            }
+
+            if (!isNaN(periodRange.start) && (isNaN(range.start) || range.start > periodRange.start)) {
+                range.start = periodRange.start;
+            }
+            if (!isNaN(periodRange.end) && (isNaN(range.end) || range.end < periodRange.end)) {
+                range.end = periodRange.end;
+            }
+        });
+
+
+        range.end = Math.min(now, range.end);
+        const adjustedEndTime = _adjustTimeBasedOnPeriodRanges(streams, range.end, true);
+
+        // if range is NaN all periods are in the future. we should return range.start > range.end in this case
+        range.end = isNaN(adjustedEndTime) ? range.end : adjustedEndTime;
+
+        range.start = voPeriod && voPeriod.mpd && voPeriod.mpd.timeShiftBufferDepth && !isNaN(voPeriod.mpd.timeShiftBufferDepth) && !isNaN(range.end) ? Math.max(range.end - voPeriod.mpd.timeShiftBufferDepth, range.start) : range.start;
+        range.start = _adjustTimeBasedOnPeriodRanges(streams, range.start);
+
+        return { range, now };
+    }
+
+    function _adjustTimelineAnchorAvailabilityOffset(now, range) {
+        timelineAnchorAvailabilityOffset = now - range.end;
+    }
+
+    function _adjustTimeBasedOnPeriodRanges(streams, time, isEndOfDvrWindow = false) {
+        try {
+            let i = 0;
+            let found = false;
+            let adjustedTime = NaN;
+
+            while (!found && i < streams.length) {
+                const streamInfo = streams[i].getStreamInfo();
+
+                // We found a period which contains the target time.
+                if (streamInfo.start <= time && (!isFinite(streamInfo.duration) || (streamInfo.start + streamInfo.duration >= time))) {
+                    adjustedTime = time;
+                    found = true;
+                }
+
+                // Adjust the time for the start of the DVR window. The current period starts after the target time. We use the starttime of this period as adjusted time
+                else if (!isEndOfDvrWindow && (streamInfo.start > time && (isNaN(adjustedTime) || streamInfo.start < adjustedTime))) {
+                    adjustedTime = streamInfo.start;
+                }
+
+                // Adjust the time for the end of the DVR window. The current period ends before the targettime. We use the end time of this period as the adjusted time
+                else if (isEndOfDvrWindow && ((streamInfo.start + streamInfo.duration) < time && (isNaN(adjustedTime) || (streamInfo.start + streamInfo.duration > adjustedTime)))) {
+                    adjustedTime = streamInfo.start + streamInfo.duration;
+                }
+
+                i += 1;
+            }
+
+            return adjustedTime;
+        } catch (e) {
+            return time;
+        }
+    }
+
+    function _calcRangeForTimeline(voRepresentation) {
+        const adaptation = voRepresentation.adaptation.period.mpd.manifest.Period[voRepresentation.adaptation.period.index].AdaptationSet[voRepresentation.adaptation.index];
+        const representation = dashManifestModel.getRepresentationFor(voRepresentation.index, adaptation);
+        const base = representation.SegmentTemplate || representation.SegmentList;
+        const timeline = base.SegmentTimeline;
+        const timescale = base.timescale;
+        const segments = timeline.S;
+        const range = { start: 0, end: 0 };
+        const segmentTime = segments[0].t;
+        const hasValidSegmentTime = !isNaN(segmentTime);
+        const enhancedSegmentTime = hasValidSegmentTime ? segmentTime : 0;
+        let d = 0;
+        let segment,
+            repeat,
+            i,
+            len;
+
+        if (hasValidSegmentTime) {
+            range.start = calcPresentationTimeFromMediaTime(enhancedSegmentTime / timescale, voRepresentation);
+        }
+
+        for (i = 0, len = segments.length; i < len; i++) {
+            segment = segments[i];
+            repeat = 0;
+            if (segment.hasOwnProperty('r')) {
+                repeat = segment.r;
+            }
+            d += segment.d * (1 + repeat);
+        }
+
+        range.end = calcPresentationTimeFromMediaTime((enhancedSegmentTime + d) / timescale, voRepresentation);
+
+        return range;
     }
 
     function calcPeriodRelativeTimeFromMpdRelativeTime(representation, mpdRelativeTime) {
@@ -186,52 +359,39 @@ function TimelineConverter() {
         return mpdRelativeTime - periodStartTime;
     }
 
-    /*
-    * We need to figure out if we want to timesync for segmentTimeine where useCalculatedLiveEdge = true
-    * seems we figure out client offset based on logic in liveEdgeFinder getLiveEdge timelineConverter.setClientTimeOffset(liveEdge - representationInfo.DVRWindow.end);
-    * FYI StreamController's onManifestUpdated entry point to timeSync
-    * */
-    function onTimeSyncComplete(e) {
-
-        if (isClientServerTimeSyncCompleted) return;
-
-        if (e.offset !== undefined) {
+    function _onUpdateTimeSyncOffset(e) {
+        if (e.offset !== undefined && !isNaN(e.offset)) {
             setClientTimeOffset(e.offset / 1000);
-            isClientServerTimeSyncCompleted = true;
         }
     }
 
     function resetInitialSettings() {
         clientServerTimeShift = 0;
-        isClientServerTimeSyncCompleted = false;
-        expectedLiveEdge = NaN;
+        timelineAnchorAvailabilityOffset = 0;
     }
 
     function reset() {
-        eventBus.off(Events.TIME_SYNCHRONIZATION_COMPLETED, onTimeSyncComplete, this);
+        eventBus.off(Events.UPDATE_TIME_SYNC_OFFSET, _onUpdateTimeSyncOffset, this);
         resetInitialSettings();
     }
 
     instance = {
-        initialize: initialize,
-        isTimeSyncCompleted: isTimeSyncCompleted,
-        setTimeSyncCompleted: setTimeSyncCompleted,
-        getClientTimeOffset: getClientTimeOffset,
-        setClientTimeOffset: setClientTimeOffset,
-        getExpectedLiveEdge: getExpectedLiveEdge,
-        setExpectedLiveEdge: setExpectedLiveEdge,
-        calcAvailabilityStartTimeFromPresentationTime: calcAvailabilityStartTimeFromPresentationTime,
-        calcAvailabilityEndTimeFromPresentationTime: calcAvailabilityEndTimeFromPresentationTime,
-        calcPresentationTimeFromWallTime: calcPresentationTimeFromWallTime,
-        calcPresentationTimeFromMediaTime: calcPresentationTimeFromMediaTime,
-        calcPeriodRelativeTimeFromMpdRelativeTime: calcPeriodRelativeTimeFromMpdRelativeTime,
-        calcMediaTimeFromPresentationTime: calcMediaTimeFromPresentationTime,
-        calcSegmentAvailabilityRange: calcSegmentAvailabilityRange,
-        getPeriodEnd: getPeriodEnd,
-        calcWallTimeForSegment: calcWallTimeForSegment,
-        reset: reset
+        initialize,
+        getClientTimeOffset,
+        setClientTimeOffset,
+        getClientReferenceTime,
+        calcAvailabilityStartTimeFromPresentationTime,
+        calcAvailabilityEndTimeFromPresentationTime,
+        calcPresentationTimeFromWallTime,
+        calcPresentationTimeFromMediaTime,
+        calcPeriodRelativeTimeFromMpdRelativeTime,
+        calcMediaTimeFromPresentationTime,
+        calcWallTimeForSegment,
+        calcTimeShiftBufferWindow,
+        reset
     };
 
+    setup();
     return instance;
 }
 

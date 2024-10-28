@@ -29,12 +29,13 @@
  *  POSSIBILITY OF SUCH DAMAGE.
  */
 
-import FactoryMaker from '../../core/FactoryMaker';
-import EventBus from '../../core/EventBus';
+import FactoryMaker from '../../core/FactoryMaker.js';
+import EventBus from '../../core/EventBus.js';
 
 function BlackListController(config) {
 
     config = config || {};
+    let instance;
     let blacklist = [];
 
     const eventBus = EventBus(this.context).getInstance();
@@ -56,12 +57,14 @@ function BlackListController(config) {
 
         blacklist.push(entry);
 
-        eventBus.trigger(
-            updateEventName,
-            {
-                entry: entry
-            }
-        );
+        eventBus.trigger(updateEventName, { entry: entry });
+    }
+
+    function remove(entry) {
+        const index = blacklist.indexOf(entry);
+        if (index !== -1) {
+            blacklist.splice(index, 1)
+        }
     }
 
     function onAddBlackList(e) {
@@ -70,7 +73,7 @@ function BlackListController(config) {
 
     function setup() {
         if (addBlacklistEventName) {
-            eventBus.on(addBlacklistEventName, onAddBlackList, this);
+            eventBus.on(addBlacklistEventName, onAddBlackList, instance);
         }
     }
 
@@ -78,13 +81,15 @@ function BlackListController(config) {
         blacklist = [];
     }
 
-    setup();
-
-    return {
+    instance = {
         add: add,
+        remove: remove,
         contains: contains,
         reset: reset
     };
+
+    setup();
+    return instance;
 }
 
 BlackListController.__dashjs_factory_name = 'BlackListController';

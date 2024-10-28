@@ -28,17 +28,18 @@
  *  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  *  POSSIBILITY OF SUCH DAMAGE.
  */
-import EventsBase from '../../core/events/EventsBase';
+import EventsBase from '../../core/events/EventsBase.js';
+
 /**
  * @class
-  */
+ */
 class ProtectionEvents extends EventsBase {
     /**
      * @description Public facing external events to be used when including protection package.
      * All public events will be aggregated into the MediaPlayerEvents Class and can be accessed
      * via MediaPlayer.events.  public_ is the prefix that we use to move event names to MediaPlayerEvents.
      */
-    constructor () {
+    constructor() {
         super();
 
         /**
@@ -50,17 +51,10 @@ class ProtectionEvents extends EventsBase {
         this.INTERNAL_KEY_MESSAGE = 'internalKeyMessage';
 
         /**
-         * Event ID for events delivered when a key system selection procedure
-         * completes
-         * @ignore
-         */
-        this.INTERNAL_KEY_SYSTEM_SELECTED = 'internalKeySystemSelected';
-
-        /**
          * Event ID for events delivered when the status of one decryption keys has changed
          * @ignore
          */
-        this.INTERNAL_KEY_STATUS_CHANGED = 'internalkeyStatusChanged';
+        this.INTERNAL_KEY_STATUSES_CHANGED = 'internalkeyStatusesChanged';
 
         /**
          * Event ID for events delivered when a new key has been added
@@ -115,9 +109,16 @@ class ProtectionEvents extends EventsBase {
         this.KEY_STATUSES_CHANGED = 'public_keyStatusesChanged';
 
         /**
+         * Triggered when the key statuses Map() of the ProtectionController was updated. This happens after there is a keystatuseschange.
+         * The event can be used as an indicator when to refresh the list of possible Representations
+         * @event ProtectionEvents#KEY_STATUSES_MAP_UPDATED
+         */
+        this.KEY_STATUSES_MAP_UPDATED = 'keyStatusesMapUpdated';
+
+        /**
          * Event ID for events delivered when a key system access procedure
          * has completed
-         * @ignore
+         * @event ProtectionEvents#KEY_SYSTEM_ACCESS_COMPLETE
          */
         this.KEY_SYSTEM_ACCESS_COMPLETE = 'public_keySystemAccessComplete';
 
@@ -134,6 +135,12 @@ class ProtectionEvents extends EventsBase {
          * @event ProtectionEvents#LICENSE_REQUEST_COMPLETE
          */
         this.LICENSE_REQUEST_COMPLETE = 'public_licenseRequestComplete';
+
+        /**
+         * Sending a license rquest
+         * @event ProtectionEvents#LICENSE_REQUEST_SENDING
+         */
+        this.LICENSE_REQUEST_SENDING = 'public_licenseRequestSending';
 
         /**
          * Event ID for needkey/encrypted events
@@ -165,7 +172,7 @@ class ProtectionEvents extends EventsBase {
          * a protection set has completed
          * @ignore
          */
-        this.TEARDOWN_COMPLETE =  'protectionTeardownComplete';
+        this.TEARDOWN_COMPLETE = 'protectionTeardownComplete';
 
         /**
          * Event ID for events delivered when a HTMLMediaElement has been
@@ -173,6 +180,12 @@ class ProtectionEvents extends EventsBase {
          * @ignore
          */
         this.VIDEO_ELEMENT_SELECTED = 'videoElementSelected';
+
+        /**
+         * Triggered when the key session has been updated successfully
+         * @ignore
+         */
+        this.KEY_SESSION_UPDATED = 'public_keySessionUpdated';
     }
 }
 

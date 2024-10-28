@@ -28,190 +28,242 @@
  *  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  *  POSSIBILITY OF SUCH DAMAGE.
  */
-import UTCTiming from '../../dash/vo/UTCTiming';
-import FactoryMaker from '../../core/FactoryMaker';
-import Constants from '../constants/Constants';
-import ABRRulesCollection from '../rules/abr/ABRRulesCollection';
-import Settings from '../../core/Settings';
-import { checkParameterType} from '../utils/SupervisorTools';
-
+import Debug from '../../core/Debug.js';
+import FactoryMaker from '../../core/FactoryMaker.js';
+import Settings from '../../core/Settings.js';
 
 const DEFAULT_MIN_BUFFER_TIME = 12;
 const DEFAULT_MIN_BUFFER_TIME_FAST_SWITCH = 20;
-
-const DEFAULT_LOW_LATENCY_LIVE_DELAY = 3.0;
 const LOW_LATENCY_REDUCTION_FACTOR = 10;
 const LOW_LATENCY_MULTIPLY_FACTOR = 5;
+const DEFAULT_CATCHUP_MAX_DRIFT = 12;
+const DEFAULT_CATCHUP_PLAYBACK_RATE_MIN = -0.5;
+const DEFAULT_CATCHUP_PLAYBACK_RATE_MAX = 0.5;
+const CATCHUP_PLAYBACK_RATE_MIN_LIMIT = -0.5;
+const CATCHUP_PLAYBACK_RATE_MAX_LIMIT = 1;
 
-const DEFAULT_XHR_WITH_CREDENTIALS = false;
-
+/**
+ * We use this model as a wrapper/proxy between Settings.js and classes that are using parameters from Settings.js.
+ * In some cases we require additional logic to be applied and the settings might need to be adjusted before being used.
+ * @class
+ * @constructor
+ */
 function MediaPlayerModel() {
 
     let instance,
-        UTCTimingSources,
-        xhrWithCredentials,
-        customABRRule;
+        logger,
+        playbackController,
+        serviceDescriptionController;
 
-    const DEFAULT_UTC_TIMING_SOURCE = {
-            scheme: 'urn:mpeg:dash:utc:http-xsdate:2014',
-            value: 'http://time.akamai.com/?iso&ms'
-        };
     const context = this.context;
     const settings = Settings(context).getInstance();
 
     function setup() {
-        UTCTimingSources = [];
-        xhrWithCredentials = {
-            default: DEFAULT_XHR_WITH_CREDENTIALS
-        };
-        customABRRule = [];
+        logger = Debug(context).getInstance().getLogger(instance);
     }
 
-    //TODO Should we use Object.define to have setters/getters? makes more readable code on other side.
-    function findABRCustomRuleIndex(rulename) {
-        let i;
-        for (i = 0; i < customABRRule.length; i++) {
-            if (customABRRule[i].rulename === rulename) {
-                return i;
+    function setConfig(config) {
+        if (config.playbackController) {
+            playbackController = config.playbackController;
+        }
+        if (config.serviceDescriptionController) {
+            serviceDescriptionController = config.serviceDescriptionController;
+        }
+    }
+
+    /**
+     * Checks the supplied min playback rate is a valid vlaue and within supported limits
+     * @param {number} rate - Supplied min playback rate
+     * @param {boolean} log - wether to shown warning or not
+     * @returns {number} corrected min playback rate
+     */
+    function _checkMinPlaybackRate(rate, log) {
+        if (isNaN(rate)) {
+            return 0;
+        }
+        if (rate > 0) {
+            if (log) {
+                logger.warn(`Supplied minimum playback rate is a positive value when it should be negative or 0. The supplied rate will not be applied and set to 0: 100% playback speed.`)
+            }
+            return 0;
+        }
+        if (rate < CATCHUP_PLAYBACK_RATE_MIN_LIMIT) {
+            if (log) {
+                logger.warn(`Supplied minimum playback rate is out of range and will be limited to ${CATCHUP_PLAYBACK_RATE_MIN_LIMIT}: ${CATCHUP_PLAYBACK_RATE_MIN_LIMIT * 100}% playback speed.`);
+            }
+            return CATCHUP_PLAYBACK_RATE_MIN_LIMIT;
+        }
+        return rate;
+    };
+
+    /**
+     * Checks the supplied max playback rate is a valid vlaue and within supported limits
+     * @param {number} rate - Supplied max playback rate
+     * @param {boolean} log - wether to shown warning or not
+     * @returns {number} corrected max playback rate
+     */
+    function _checkMaxPlaybackRate(rate, log) {
+        if (isNaN(rate)) {
+            return 0;
+        }
+        if (rate < 0) {
+            if (log) {
+                logger.warn(`Supplied maximum playback rate is a negative value when it should be negative or 0. The supplied rate will not be applied and set to 0: 100% playback speed.`)
+            }
+            return 0;
+        }
+        if (rate > CATCHUP_PLAYBACK_RATE_MAX_LIMIT) {
+            if (log) {
+                logger.warn(`Supplied maximum playback rate is out of range and will be limited to ${CATCHUP_PLAYBACK_RATE_MAX_LIMIT}: ${(1 + CATCHUP_PLAYBACK_RATE_MAX_LIMIT) * 100}% playback speed.`);
+            }
+            return CATCHUP_PLAYBACK_RATE_MAX_LIMIT;
+        }
+        return rate;
+    };
+
+    /**
+     * Returns the maximum drift allowed before applying a seek back to the live edge when the catchup mode is enabled
+     * @return {number}
+     */
+    function getCatchupMaxDrift() {
+        if (!isNaN(settings.get().streaming.liveCatchup.maxDrift) && settings.get().streaming.liveCatchup.maxDrift >= 0) {
+            return settings.get().streaming.liveCatchup.maxDrift;
+        }
+
+        const serviceDescriptionSettings = serviceDescriptionController.getServiceDescriptionSettings();
+        if (serviceDescriptionSettings && serviceDescriptionSettings.liveCatchup && !isNaN(serviceDescriptionSettings.liveCatchup.maxDrift) && serviceDescriptionSettings.liveCatchup.maxDrift >= 0) {
+            return serviceDescriptionSettings.liveCatchup.maxDrift;
+        }
+
+        return DEFAULT_CATCHUP_MAX_DRIFT;
+    }
+
+    /**
+     * Returns the minimum and maximum playback rates to be used when applying the catchup mechanism
+     * If only one of the min/max values has been set then the other will default to 0 (no playback rate change).
+     * @return {number}
+     */
+    function getCatchupPlaybackRates(log) {
+        const settingsPlaybackRate = settings.get().streaming.liveCatchup.playbackRate;
+
+        if (!isNaN(settingsPlaybackRate.min) || !isNaN(settingsPlaybackRate.max)) {
+            return {
+                min: _checkMinPlaybackRate(settingsPlaybackRate.min, log),
+                max: _checkMaxPlaybackRate(settingsPlaybackRate.max, log),
             }
         }
-        return -1;
-    }
 
-    function getABRCustomRules() {
-        return customABRRule;
-    }
-
-    function addABRCustomRule(type, rulename, rule) {
-        if (typeof type !== 'string' || (type !== ABRRulesCollection.ABANDON_FRAGMENT_RULES && type !== ABRRulesCollection.QUALITY_SWITCH_RULES) ||
-            typeof rulename !== 'string') {
-            throw Constants.BAD_ARGUMENT_ERROR;
-        }
-        let index = findABRCustomRuleIndex(rulename);
-        if (index === -1) {
-            // add rule
-            customABRRule.push({
-                type: type,
-                rulename: rulename,
-                rule: rule
-            });
-        } else {
-            // update rule
-            customABRRule[index].type = type;
-            customABRRule[index].rule = rule;
-        }
-    }
-
-    function removeABRCustomRule(rulename) {
-        if (rulename) {
-            let index = findABRCustomRuleIndex(rulename);
-            //if no rulename custom rule has been found, do nothing
-            if (index !== -1) {
-                // remove rule
-                customABRRule.splice(index, 1);
+        const serviceDescriptionSettings = serviceDescriptionController.getServiceDescriptionSettings();
+        if (serviceDescriptionSettings && serviceDescriptionSettings.liveCatchup && (!isNaN(serviceDescriptionSettings.liveCatchup.playbackRate.min) || !isNaN(serviceDescriptionSettings.liveCatchup.playbackRate.max))) {
+            const sdPlaybackRate = serviceDescriptionSettings.liveCatchup.playbackRate;
+            return {
+                min: _checkMinPlaybackRate(sdPlaybackRate.min, log),
+                max: _checkMaxPlaybackRate(sdPlaybackRate.max, log),
             }
-        } else {
-            //if no rulename is defined, remove all ABR custome rules
-            customABRRule = [];
+        }
+
+        return {
+            min: DEFAULT_CATCHUP_PLAYBACK_RATE_MIN,
+            max: DEFAULT_CATCHUP_PLAYBACK_RATE_MAX
         }
     }
 
-    function getStableBufferTime() {
-        if (settings.get().streaming.lowLatencyEnabled) {
-            return getLiveDelay() * 0.6;
+    /**
+     * Returns whether the catchup mode is activated via the settings or internally in the PlaybackController
+     * @return {boolean}
+     */
+    function getCatchupModeEnabled() {
+        if (settings.get().streaming.liveCatchup.enabled !== null) {
+            return settings.get().streaming.liveCatchup.enabled;
         }
 
-        const stableBufferTime = settings.get().streaming.stableBufferTime;
-        return stableBufferTime > -1 ? stableBufferTime : settings.get().streaming.fastSwitchEnabled ? DEFAULT_MIN_BUFFER_TIME_FAST_SWITCH : DEFAULT_MIN_BUFFER_TIME;
+        return playbackController.getInitialCatchupModeActivated();
     }
 
+    /**
+     * Returns the min,max or initial bitrate for a specific media type.
+     * @param {string} field
+     * @param {string} mediaType
+     */
+    function getAbrBitrateParameter(field, mediaType) {
+        try {
+            const setting = settings.get().streaming.abr[field][mediaType];
+            if (!isNaN(setting) && setting !== -1) {
+                return setting;
+            }
+
+            const serviceDescriptionSettings = serviceDescriptionController.getServiceDescriptionSettings();
+            if (serviceDescriptionSettings && serviceDescriptionSettings[field] && !isNaN(serviceDescriptionSettings[field][mediaType])) {
+                return serviceDescriptionSettings[field][mediaType];
+            }
+
+            return -1;
+        } catch (e) {
+            return -1;
+        }
+    }
+
+    /**
+     * Returns the initial buffer level taking the stable buffer time into account
+     * @return {number}
+     */
+    function getInitialBufferLevel() {
+        const initialBufferLevel = settings.get().streaming.buffer.initialBufferLevel;
+
+        if (isNaN(initialBufferLevel) || initialBufferLevel < 0) {
+            return 0;
+        }
+
+        return Math.min(getBufferTimeDefault(), initialBufferLevel);
+    }
+
+    /**
+     * Returns the stable buffer time taking the live delay into account
+     * @return {number}
+     */
+    function getBufferTimeDefault() {
+        let bufferTimeDefault = settings.get().streaming.buffer.bufferTimeDefault > 0 ? settings.get().streaming.buffer.bufferTimeDefault : settings.get().streaming.buffer.fastSwitchEnabled ? DEFAULT_MIN_BUFFER_TIME_FAST_SWITCH : DEFAULT_MIN_BUFFER_TIME;
+        const liveDelay = playbackController.getLiveDelay();
+
+        return !isNaN(liveDelay) && liveDelay > 0 ? Math.min(bufferTimeDefault, liveDelay) : bufferTimeDefault;
+    }
+
+    /**
+     * Returns the number of retry attempts for a specific media type
+     * @param type
+     * @return {number}
+     */
     function getRetryAttemptsForType(type) {
-        return settings.get().streaming.lowLatencyEnabled ? settings.get().streaming.retryAttempts[type] * LOW_LATENCY_MULTIPLY_FACTOR : settings.get().streaming.retryAttempts[type];
+        const lowLatencyMultiplyFactor = !isNaN(settings.get().streaming.retryAttempts.lowLatencyMultiplyFactor) ? settings.get().streaming.retryAttempts.lowLatencyMultiplyFactor : LOW_LATENCY_MULTIPLY_FACTOR;
+
+        return playbackController.getLowLatencyModeEnabled() ? settings.get().streaming.retryAttempts[type] * lowLatencyMultiplyFactor : settings.get().streaming.retryAttempts[type];
     }
 
+    /**
+     * Returns the retry interval for a specific media type
+     * @param type
+     * @return {number}
+     */
     function getRetryIntervalsForType(type) {
-        return settings.get().streaming.lowLatencyEnabled ? settings.get().streaming.retryIntervals[type] / LOW_LATENCY_REDUCTION_FACTOR : settings.get().streaming.retryIntervals[type];
-    }
+        const lowLatencyReductionFactor = !isNaN(settings.get().streaming.retryIntervals.lowLatencyReductionFactor) ? settings.get().streaming.retryIntervals.lowLatencyReductionFactor : LOW_LATENCY_REDUCTION_FACTOR;
 
-    function getLiveDelay() {
-        if (settings.get().streaming.lowLatencyEnabled) {
-            return settings.get().streaming.liveDelay || DEFAULT_LOW_LATENCY_LIVE_DELAY;
-        }
-        return settings.get().streaming.liveDelay;
-    }
-
-    function addUTCTimingSource(schemeIdUri, value) {
-        removeUTCTimingSource(schemeIdUri, value); //check if it already exists and remove if so.
-        let vo = new UTCTiming();
-        vo.schemeIdUri = schemeIdUri;
-        vo.value = value;
-        UTCTimingSources.push(vo);
-    }
-
-    function getUTCTimingSources() {
-        return UTCTimingSources;
-    }
-
-    function removeUTCTimingSource(schemeIdUri, value) {
-        checkParameterType(schemeIdUri, 'string');
-        checkParameterType(value, 'string');
-        UTCTimingSources.forEach(function (obj, idx) {
-            if (obj.schemeIdUri === schemeIdUri && obj.value === value) {
-                UTCTimingSources.splice(idx, 1);
-            }
-        });
-    }
-
-    function clearDefaultUTCTimingSources() {
-        UTCTimingSources = [];
-    }
-
-    function restoreDefaultUTCTimingSources() {
-        addUTCTimingSource(DEFAULT_UTC_TIMING_SOURCE.scheme, DEFAULT_UTC_TIMING_SOURCE.value);
-    }
-
-    function setXHRWithCredentialsForType(type, value) {
-        if (!type) {
-            Object.keys(xhrWithCredentials).forEach(key => {
-                setXHRWithCredentialsForType(key, value);
-            });
-        } else {
-            xhrWithCredentials[type] = !!value;
-        }
-    }
-
-    function getXHRWithCredentialsForType(type) {
-        const useCreds = xhrWithCredentials[type];
-
-        return useCreds === undefined ? xhrWithCredentials.default : useCreds;
-    }
-
-    function getDefaultUtcTimingSource() {
-        return DEFAULT_UTC_TIMING_SOURCE;
+        return playbackController.getLowLatencyModeEnabled() ? settings.get().streaming.retryIntervals[type] / lowLatencyReductionFactor : settings.get().streaming.retryIntervals[type];
     }
 
     function reset() {
-        //TODO need to figure out what props to persist across sessions and which to reset if any.
-        //setup();
     }
 
     instance = {
-        getABRCustomRules: getABRCustomRules,
-        addABRCustomRule: addABRCustomRule,
-        removeABRCustomRule: removeABRCustomRule,
-        getStableBufferTime: getStableBufferTime,
-        getRetryAttemptsForType: getRetryAttemptsForType,
-        getRetryIntervalsForType: getRetryIntervalsForType,
-        getLiveDelay: getLiveDelay,
-        addUTCTimingSource: addUTCTimingSource,
-        removeUTCTimingSource: removeUTCTimingSource,
-        getUTCTimingSources: getUTCTimingSources,
-        clearDefaultUTCTimingSources: clearDefaultUTCTimingSources,
-        restoreDefaultUTCTimingSources: restoreDefaultUTCTimingSources,
-        setXHRWithCredentialsForType: setXHRWithCredentialsForType,
-        getXHRWithCredentialsForType: getXHRWithCredentialsForType,
-        getDefaultUtcTimingSource: getDefaultUtcTimingSource,
-        reset: reset
+        getCatchupMaxDrift,
+        getCatchupModeEnabled,
+        getBufferTimeDefault,
+        getInitialBufferLevel,
+        getRetryAttemptsForType,
+        getRetryIntervalsForType,
+        getCatchupPlaybackRates,
+        getAbrBitrateParameter,
+        setConfig,
+        reset
     };
 
     setup();
@@ -219,6 +271,5 @@ function MediaPlayerModel() {
     return instance;
 }
 
-//TODO see if you can move this and not export and just getter to get default value.
 MediaPlayerModel.__dashjs_factory_name = 'MediaPlayerModel';
 export default FactoryMaker.getSingletonFactory(MediaPlayerModel);

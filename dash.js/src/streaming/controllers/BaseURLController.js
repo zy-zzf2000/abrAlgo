@@ -29,13 +29,14 @@
  *  POSSIBILITY OF SUCH DAMAGE.
  */
 
-import BaseURLTreeModel from '../models/BaseURLTreeModel';
-import BaseURLSelector from '../utils/BaseURLSelector';
-import URLUtils from '../utils/URLUtils';
-import BaseURL from '../../dash/vo/BaseURL';
-import FactoryMaker from '../../core/FactoryMaker';
-import EventBus from '../../core/EventBus';
-import Events from '../../core/events/Events';
+import BaseURLTreeModel from '../models/BaseURLTreeModel.js';
+import BaseURLSelector from '../utils/BaseURLSelector.js';
+import URLUtils from '../utils/URLUtils.js';
+import BaseURL from '../../dash/vo/BaseURL.js';
+import FactoryMaker from '../../core/FactoryMaker.js';
+import EventBus from '../../core/EventBus.js';
+import Events from '../../core/events/Events.js';
+import MediaPlayerEvents from '../MediaPlayerEvents.js';
 
 function BaseURLController() {
 
@@ -47,7 +48,8 @@ function BaseURLController() {
     const urlUtils = URLUtils(context).getInstance();
 
     let baseURLTreeModel,
-        baseURLSelector;
+        baseURLSelector,
+        contentSteeringController;
 
     function onBlackListChanged(e) {
         baseURLTreeModel.invalidateSelectedIndexes(e.entry);
@@ -57,7 +59,7 @@ function BaseURLController() {
         baseURLTreeModel = BaseURLTreeModel(context).create();
         baseURLSelector = BaseURLSelector(context).create();
 
-        eventBus.on(Events.SERVICE_LOCATION_BLACKLIST_CHANGED, onBlackListChanged, instance);
+        eventBus.on(Events.SERVICE_LOCATION_BASE_URL_BLACKLIST_CHANGED, onBlackListChanged, instance);
     }
 
     function setConfig(config) {
@@ -72,11 +74,18 @@ function BaseURLController() {
         if (config.adapter) {
             adapter = config.adapter;
         }
+
+        if (config.contentSteeringController) {
+            contentSteeringController = config.contentSteeringController
+        }
     }
 
     function update(manifest) {
         baseURLTreeModel.update(manifest);
         baseURLSelector.chooseSelector(adapter.getIsDVB(manifest));
+        eventBus.trigger(MediaPlayerEvents.BASE_URLS_UPDATED, {
+            baseUrls: getBaseUrls(manifest)
+        });
     }
 
     function resolve(path) {
@@ -94,6 +103,7 @@ function BaseURLController() {
                 }
                 p.availabilityTimeOffset = b.availabilityTimeOffset;
                 p.availabilityTimeComplete = b.availabilityTimeComplete;
+                p.queryParams = b.queryParams;
             } else {
                 return new BaseURL();
             }
@@ -111,21 +121,28 @@ function BaseURLController() {
         baseURLSelector.reset();
     }
 
+    function getBaseUrls(manifest) {
+        return baseURLTreeModel.getBaseUrls(manifest);
+    }
+
     function initialize(data) {
 
         // report config to baseURLTreeModel and baseURLSelector
         baseURLTreeModel.setConfig({
-            adapter: adapter
+            adapter,
+            contentSteeringController
         });
 
         update(data);
     }
 
     instance = {
-        reset: reset,
-        initialize: initialize,
-        resolve: resolve,
-        setConfig: setConfig
+        reset,
+        initialize,
+        resolve,
+        setConfig,
+        getBaseUrls,
+        update
     };
 
     setup();
@@ -134,4 +151,4 @@ function BaseURLController() {
 }
 
 BaseURLController.__dashjs_factory_name = 'BaseURLController';
-export default FactoryMaker.getSingletonFactory(BaseURLController);
+export default FactoryMaker.getClassFactory(BaseURLController);

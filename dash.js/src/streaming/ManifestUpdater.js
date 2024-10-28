@@ -28,35 +28,46 @@
  *  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  *  POSSIBILITY OF SUCH DAMAGE.
  */
-import EventBus from '../core/EventBus';
-import Events from '../core/events/Events';
-import FactoryMaker from '../core/FactoryMaker';
-import Debug from '../core/Debug';
-import Errors from '../core/errors/Errors';
+import EventBus from '../core/EventBus.js';
+import Events from '../core/events/Events.js';
+import MediaPlayerEvents from '../streaming/MediaPlayerEvents.js';
+import FactoryMaker from '../core/FactoryMaker.js';
+import Debug from '../core/Debug.js';
+import Errors from '../core/errors/Errors.js';
+import DashConstants from '../dash/constants/DashConstants.js';
+import URLUtils from './utils/URLUtils.js';
+import LocationSelector from './utils/LocationSelector.js';
 
 function ManifestUpdater() {
 
     const context = this.context;
     const eventBus = EventBus(context).getInstance();
+    const urlUtils = URLUtils(context).getInstance();
 
     let instance,
         logger,
         refreshDelay,
         refreshTimer,
         isPaused,
+        isStopped,
         isUpdating,
         manifestLoader,
         manifestModel,
+        locationSelector,
         adapter,
         errHandler,
+        contentSteeringController,
         settings;
 
     function setup() {
         logger = Debug(context).getInstance().getLogger(instance);
+        locationSelector = LocationSelector(context).create();
     }
 
     function setConfig(config) {
-        if (!config) return;
+        if (!config) {
+            return;
+        }
 
         if (config.manifestModel) {
             manifestModel = config.manifestModel;
@@ -70,8 +81,14 @@ function ManifestUpdater() {
         if (config.errHandler) {
             errHandler = config.errHandler;
         }
+        if (config.locationSelector) {
+            locationSelector = config.locationSelector;
+        }
         if (config.settings) {
             settings = config.settings;
+        }
+        if (config.contentSteeringController) {
+            contentSteeringController = config.contentSteeringController;
         }
     }
 
@@ -79,8 +96,8 @@ function ManifestUpdater() {
         resetInitialSettings();
 
         eventBus.on(Events.STREAMS_COMPOSED, onStreamsComposed, this);
-        eventBus.on(Events.PLAYBACK_STARTED, onPlaybackStarted, this);
-        eventBus.on(Events.PLAYBACK_PAUSED, onPlaybackPaused, this);
+        eventBus.on(MediaPlayerEvents.PLAYBACK_STARTED, onPlaybackStarted, this);
+        eventBus.on(MediaPlayerEvents.PLAYBACK_PAUSED, onPlaybackPaused, this);
         eventBus.on(Events.INTERNAL_MANIFEST_LOADED, onManifestLoaded, this);
     }
 
@@ -92,13 +109,14 @@ function ManifestUpdater() {
         refreshDelay = NaN;
         isUpdating = false;
         isPaused = true;
+        isStopped = false;
         stopManifestRefreshTimer();
     }
 
     function reset() {
 
-        eventBus.off(Events.PLAYBACK_STARTED, onPlaybackStarted, this);
-        eventBus.off(Events.PLAYBACK_PAUSED, onPlaybackPaused, this);
+        eventBus.off(MediaPlayerEvents.PLAYBACK_STARTED, onPlaybackStarted, this);
+        eventBus.off(MediaPlayerEvents.PLAYBACK_PAUSED, onPlaybackPaused, this);
         eventBus.off(Events.STREAMS_COMPOSED, onStreamsComposed, this);
         eventBus.off(Events.INTERNAL_MANIFEST_LOADED, onManifestLoaded, this);
 
@@ -107,13 +125,17 @@ function ManifestUpdater() {
 
     function stopManifestRefreshTimer() {
         if (refreshTimer !== null) {
-            clearInterval(refreshTimer);
+            clearTimeout(refreshTimer);
             refreshTimer = null;
         }
     }
 
     function startManifestRefreshTimer(delay) {
         stopManifestRefreshTimer();
+
+        if (isStopped) {
+            return;
+        }
 
         if (isNaN(delay) && !isNaN(refreshDelay)) {
             delay = refreshDelay * 1000;
@@ -125,18 +147,96 @@ function ManifestUpdater() {
         }
     }
 
-    function refreshManifest() {
+    function refreshManifest(ignorePatch = false) {
         isUpdating = true;
         const manifest = manifestModel.getValue();
+
+        // default to the original url in the manifest
         let url = manifest.url;
-        const location = adapter.getLocation(manifest);
-        if (location) {
-            url = location;
+
+        // Check for PatchLocation and Location alternatives
+        let serviceLocation = null;
+        const availablePatchLocations = adapter.getPatchLocation(manifest);
+        const patchLocation = locationSelector.select(availablePatchLocations);
+        let queryParams = null;
+        if (patchLocation && !ignorePatch) {
+            url = patchLocation.url;
+            serviceLocation = patchLocation.serviceLocation;
+            queryParams = patchLocation.queryParams;
+        } else {
+            const availableMpdLocations = _getAvailableMpdLocations(manifest);
+            const mpdLocation = locationSelector.select(availableMpdLocations);
+            if (mpdLocation) {
+                url = mpdLocation.url;
+                serviceLocation = mpdLocation.serviceLocation;
+                queryParams = mpdLocation.queryParams;
+            }
         }
-        manifestLoader.load(url);
+
+        // if one of the alternatives was relative, convert to absolute
+        if (urlUtils.isRelative(url)) {
+            url = urlUtils.resolve(url, manifest.url);
+        }
+
+        manifestLoader.load(url, serviceLocation, queryParams);
+    }
+
+    function _getAvailableMpdLocations(manifest) {
+        const manifestLocations = adapter.getLocation(manifest);
+        const synthesizedElements = contentSteeringController.getSynthesizedLocationElements(manifestLocations);
+
+        return manifestLocations.concat(synthesizedElements);
     }
 
     function update(manifest) {
+        if (!manifest) {
+            // successful update with no content implies existing manifest remains valid
+            manifest = manifestModel.getValue();
+
+            // override load time to avoid invalid latency tracking and ensure update cadence
+            manifest.loadedTime = new Date();
+        } else if (adapter.getIsPatch(manifest)) {
+            // with patches the in-memory manifest is our base
+            let patch = manifest;
+            manifest = manifestModel.getValue();
+
+            // check for patch validity
+            let isPatchValid = adapter.isPatchValid(manifest, patch);
+            let patchSuccessful = isPatchValid;
+
+            if (isPatchValid) {
+                // grab publish time before update
+                let publishTime = adapter.getPublishTime(manifest);
+
+                // apply validated patch to manifest
+                adapter.applyPatchToManifest(manifest, patch);
+
+                // get the updated publish time
+                let updatedPublishTime = adapter.getPublishTime(manifest);
+
+                // ensure the patch properly updated the in-memory publish time
+                patchSuccessful = publishTime.getTime() !== updatedPublishTime.getTime();
+            }
+
+            // if the patch failed to apply, force a full manifest refresh
+            if (!patchSuccessful) {
+                logger.debug('Patch provided is invalid, performing full manifest refresh');
+                refreshManifest(true);
+                return;
+            }
+
+            // override load time to avoid invalid latency tracking and ensure update cadence
+            manifest.loadedTime = new Date();
+        }
+
+        // See DASH-IF IOP v4.3 section 4.6.4 "Transition Phase between Live and On-Demand"
+        // Stop manifest update, ignore static manifest and signal end of dynamic stream to detect end of stream
+        if (manifestModel.getValue() && manifestModel.getValue().type === DashConstants.DYNAMIC && manifest.type === DashConstants.STATIC) {
+            eventBus.trigger(Events.DYNAMIC_TO_STATIC);
+            isUpdating = false;
+            isStopped = true;
+            return;
+        }
 
         manifestModel.setValue(manifest);
 
@@ -148,7 +248,7 @@ function ManifestUpdater() {
         if (refreshDelay * 1000 > 0x7FFFFFFF) {
             refreshDelay = 0x7FFFFFFF / 1000;
         }
-        eventBus.trigger(Events.MANIFEST_UPDATED, {manifest: manifest});
+        eventBus.trigger(Events.MANIFEST_UPDATED, { manifest: manifest });
         logger.info('Manifest has been refreshed at ' + date + '[' + date.getTime() / 1000 + '] ');
 
         if (!isPaused) {
@@ -157,7 +257,7 @@ function ManifestUpdater() {
     }
 
     function onRefreshTimer() {
-        if (isPaused && !settings.get().streaming.scheduleWhilePaused) {
+        if (isPaused) {
             return;
         }
         if (isUpdating) {
@@ -175,14 +275,17 @@ function ManifestUpdater() {
         }
     }
 
-    function onPlaybackStarted (/*e*/) {
+    function onPlaybackStarted(/*e*/) {
         isPaused = false;
         startManifestRefreshTimer();
     }
 
     function onPlaybackPaused(/*e*/) {
-        isPaused = true;
-        stopManifestRefreshTimer();
+        isPaused = !settings.get().streaming.scheduling.scheduleWhilePaused;
+
+        if (isPaused) {
+            stopManifestRefreshTimer();
+        }
     }
 
     function onStreamsComposed(/*e*/) {
@@ -190,16 +293,22 @@ function ManifestUpdater() {
         isUpdating = false;
     }
 
+    function getIsUpdating() {
+        return isUpdating;
+    }
+
     instance = {
-        initialize: initialize,
-        setManifest: setManifest,
-        refreshManifest: refreshManifest,
-        setConfig: setConfig,
-        reset: reset
+        initialize,
+        setManifest,
+        refreshManifest,
+        getIsUpdating,
+        setConfig,
+        reset
     };
 
     setup();
     return instance;
 }
+
 ManifestUpdater.__dashjs_factory_name = 'ManifestUpdater';
 export default FactoryMaker.getClassFactory(ManifestUpdater);

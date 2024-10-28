@@ -28,11 +28,13 @@
  *  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  *  POSSIBILITY OF SUCH DAMAGE.
  */
-import FactoryMaker from '../../core/FactoryMaker';
-import Debug from '../../core/Debug';
-import EventBus from '../../core/EventBus';
-import Events from '../../core/events/Events';
-import { fromXML, generateISD } from 'imsc';
+import FactoryMaker from '../../core/FactoryMaker.js';
+import Debug from '../../core/Debug.js';
+import EventBus from '../../core/EventBus.js';
+import Events from '../../core/events/Events.js';
+import {fromXML, generateISD} from 'imsc';
+import MediaPlayerEvents from '../MediaPlayerEvents.js';
+import ConformanceViolationConstants from '../constants/ConformanceViolationConstants.js';
 
 function TTMLParser() {
 
@@ -64,7 +66,8 @@ function TTMLParser() {
      * @param {number} offsetTime - offset time to apply to cue time
      * @param {integer} startTimeSegment - startTime for the current segment
      * @param {integer} endTimeSegment - endTime for the current segment
-     * @param {Array} images - images array referenced by subs MP4 box
+     * @param {array} images - images array referenced by subs MP4 box
+     * @returns {array} captionArray
      */
     function parse(data, offsetTime, startTimeSegment, endTimeSegment, images) {
         let errorMsg = '';
@@ -81,9 +84,20 @@ function TTMLParser() {
         let metadataHandler = {
 
             onOpenTag: function (ns, name, attrs) {
-                if (name === 'image' && ns === 'http://www.smpte-ra.org/schemas/2052-1/2010/smpte-tt') {
-                    if (!attrs[' imagetype'] || attrs[' imagetype'].value !== 'PNG') {
-                        logger.warn('smpte-tt imagetype != PNG. Discarded');
+                // cope with existing non-compliant content
+                if (attrs[' imagetype'] && !attrs[' imageType']) {
+                    eventBus.trigger(MediaPlayerEvents.CONFORMANCE_VIOLATION, {
+                        level: ConformanceViolationConstants.LEVELS.ERROR,
+                        event: ConformanceViolationConstants.EVENTS.NON_COMPLIANT_SMPTE_IMAGE_ATTRIBUTE
+                    });
+                    attrs[' imageType'] = attrs[' imagetype'];
+                }
+
+                if (name === 'image' &&
+                    (ns === 'http://www.smpte-ra.org/schemas/2052-1/2010/smpte-tt' ||
+                        ns === 'http://www.smpte-ra.org/schemas/2052-1/2013/smpte-tt')) {
+                    if (!attrs[' imageType'] || attrs[' imageType'].value !== 'PNG') {
+                        logger.warn('smpte-tt imageType != PNG. Discarded');
                         return;
                     }
                     currentImageId = attrs['http://www.w3.org/XML/1998/namespace id'].value;
@@ -114,11 +128,11 @@ function TTMLParser() {
 
         eventBus.trigger(Events.TTML_TO_PARSE, content);
 
-        const imsc1doc = fromXML(content.data, function (msg) {
+        let imsc1doc = fromXML(content.data, function (msg) {
             errorMsg = msg;
         }, metadataHandler);
 
-        eventBus.trigger(Events.TTML_PARSED, {ttmlString: content.data, ttmlDoc: imsc1doc});
+        eventBus.trigger(Events.TTML_PARSED, { ttmlString: content.data, ttmlDoc: imsc1doc });
 
         const mediaTimeEvents = imsc1doc.getMediaTimeEvents();
 
@@ -129,8 +143,8 @@ function TTMLParser() {
 
             if (isd.contents.some(topLevelContents => topLevelContents.contents.length)) {
                 //be sure that mediaTimeEvents values are in the mp4 segment time ranges.
-                startTime = (mediaTimeEvents[i] + offsetTime) < startTimeSegment ? startTimeSegment : (mediaTimeEvents[i] + offsetTime);
-                endTime = (mediaTimeEvents[i + 1] + offsetTime) > endTimeSegment ? endTimeSegment : (mediaTimeEvents[i + 1] + offsetTime);
+                startTime = mediaTimeEvents[i] + offsetTime;
+                endTime = mediaTimeEvents[i + 1] + offsetTime;
 
                 if (startTime < endTime) {
                     captionArray.push({
@@ -161,5 +175,6 @@ function TTMLParser() {
     setup();
     return instance;
 }
+
 TTMLParser.__dashjs_factory_name = 'TTMLParser';
 export default FactoryMaker.getSingletonFactory(TTMLParser);

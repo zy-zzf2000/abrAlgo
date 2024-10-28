@@ -36,7 +36,8 @@
  * @class
  */
 
-import ProtectionConstants from '../../constants/ProtectionConstants';
+import ProtectionConstants from '../../constants/ProtectionConstants.js';
+import FactoryMaker from '../../../core/FactoryMaker.js';
 
 function DRMToday(config) {
 
@@ -93,15 +94,15 @@ function DRMToday(config) {
     }
 
     instance = {
-        getServerURLFromMessage: getServerURLFromMessage,
-        getHTTPMethod: getHTTPMethod,
-        getResponseType: getResponseType,
-        getLicenseMessage: getLicenseMessage,
-        getErrorResponse: getErrorResponse
+        getServerURLFromMessage,
+        getHTTPMethod,
+        getResponseType,
+        getLicenseMessage,
+        getErrorResponse
     };
 
     return instance;
 }
 
 DRMToday.__dashjs_factory_name = 'DRMToday';
-export default dashjs.FactoryMaker.getSingletonFactory(DRMToday); /* jshint ignore:line */
+export default FactoryMaker.getSingletonFactory(DRMToday); 

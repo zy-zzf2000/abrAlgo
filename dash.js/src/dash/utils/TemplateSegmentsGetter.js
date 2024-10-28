@@ -29,10 +29,9 @@
  *  POSSIBILITY OF SUCH DAMAGE.
  */
 
-import FactoryMaker from '../../core/FactoryMaker';
-import Constants from '../../streaming/constants/Constants';
-
-import { replaceTokenForTemplate, getIndexBasedSegment } from './SegmentsUtils';
+import FactoryMaker from '../../core/FactoryMaker.js';
+import Constants from '../../streaming/constants/Constants.js';
+import {replaceTokenForTemplate, getIndexBasedSegment} from './SegmentsUtils.js';
 
 function TemplateSegmentsGetter(config, isDynamic) {
     config = config || {};
@@ -46,6 +45,22 @@ function TemplateSegmentsGetter(config, isDynamic) {
         }
     }
 
+    function getMediaFinishedInformation(representation) {
+        const mediaFinishedInformation = { numberOfSegments: 0, mediaTimeOfLastSignaledSegment: NaN }
+        if (!representation) {
+            return mediaFinishedInformation
+        }
+
+        const duration = representation.segmentDuration;
+        if (isNaN(duration)) {
+            mediaFinishedInformation.numberOfSegments = 1;
+        } else {
+            mediaFinishedInformation.numberOfSegments = Math.ceil(representation.adaptation.period.duration / duration);
+        }
+
+        return mediaFinishedInformation;
+    }
+
     function getSegmentByIndex(representation, index) {
         checkConfig();
 
@@ -53,28 +68,20 @@ function TemplateSegmentsGetter(config, isDynamic) {
             return null;
         }
 
-        const template = representation.adaptation.period.mpd.manifest.Period_asArray[representation.adaptation.period.index].
-            AdaptationSet_asArray[representation.adaptation.index].Representation_asArray[representation.index].SegmentTemplate;
+        const template = representation.adaptation.period.mpd.manifest.Period[representation.adaptation.period.index].
+            AdaptationSet[representation.adaptation.index].Representation[representation.index].SegmentTemplate;
 
+        // This is the index without @startNumber
         index = Math.max(index, 0);
 
         const seg = getIndexBasedSegment(timelineConverter, isDynamic, representation, index);
         if (seg) {
-            seg.replacementTime = (index - 1) * representation.segmentDuration;
+            seg.replacementTime = Math.round(index * representation.segmentDuration * representation.timescale, 10);
 
             let url = template.media;
             url = replaceTokenForTemplate(url, 'Number', seg.replacementNumber);
             url = replaceTokenForTemplate(url, 'Time', seg.replacementTime);
             seg.media = url;
-        }
-
-        const duration = representation.segmentDuration;
-        const availabilityWindow = representation.segmentAvailabilityRange;
-        if (isNaN(duration)) {
-            representation.availableSegmentsNumber = 1;
-        }
-        else {
-            representation.availableSegmentsNumber = Math.ceil((availabilityWindow.end - availabilityWindow.start) / duration);
         }
 
         return seg;
@@ -93,15 +100,17 @@ function TemplateSegmentsGetter(config, isDynamic) {
             return null;
         }
 
-        const periodTime = timelineConverter.calcPeriodRelativeTimeFromMpdRelativeTime(representation, requestedTime);
+        // Calculate the relative time for the requested time in this period
+        let periodTime = timelineConverter.calcPeriodRelativeTimeFromMpdRelativeTime(representation, requestedTime);
         const index = Math.floor(periodTime / duration);
 
         return getSegmentByIndex(representation, index);
     }
 
     instance = {
-        getSegmentByIndex: getSegmentByIndex,
-        getSegmentByTime: getSegmentByTime
+        getSegmentByIndex,
+        getSegmentByTime,
+        getMediaFinishedInformation
     };
 
     return instance;

@@ -36,10 +36,11 @@
  * @implements MediaPlayer.dependencies.protection.KeySystem
  */
 
-import CommonEncryption from '../CommonEncryption';
-import ProtectionConstants from '../../constants/ProtectionConstants';
+import CommonEncryption from '../CommonEncryption.js';
+import ProtectionConstants from '../../constants/ProtectionConstants.js';
+import FactoryMaker from '../../../core/FactoryMaker.js';
 
-const uuid = 'edef8ba9-79d6-4ace-a3c8-27dcd51d21ed';
+const uuid = ProtectionConstants.WIDEVINE_UUID;
 const systemString = ProtectionConstants.WIDEVINE_KEYSTEM_STRING;
 const schemeIdURI = 'urn:uuid:' + uuid;
 
@@ -47,14 +48,7 @@ function KeySystemWidevine(config) {
 
     config = config || {};
     let instance;
-    let protData = null;
     const BASE64 = config.BASE64;
-
-    function init(protectionData) {
-        if (protectionData) {
-            protData = protectionData;
-        }
-    }
 
     function getInitData(cp) {
         return CommonEncryption.parseInitDataFromContentProtection(cp, BASE64);
@@ -72,35 +66,23 @@ function KeySystemWidevine(config) {
         return null;
     }
 
-    function getCDMData() {
-        return null;
-    }
-
-    function getSessionId(cp) {
-        // Get sessionId from protectionData or from manifest
-        if (protData && protData.sessionId) {
-            return protData.sessionId;
-        } else if (cp && cp.sessionId) {
-            return cp.sessionId;
-        }
+    function getCDMData(/*cdmData*/) {
         return null;
     }
 
     instance = {
-        uuid: uuid,
-        schemeIdURI: schemeIdURI,
-        systemString: systemString,
-        init: init,
-        getInitData: getInitData,
-        getRequestHeadersFromMessage: getRequestHeadersFromMessage,
-        getLicenseRequestFromMessage: getLicenseRequestFromMessage,
-        getLicenseServerURLFromInitData: getLicenseServerURLFromInitData,
-        getCDMData: getCDMData,
-        getSessionId: getSessionId
+        uuid,
+        schemeIdURI,
+        systemString,
+        getInitData,
+        getRequestHeadersFromMessage,
+        getLicenseRequestFromMessage,
+        getLicenseServerURLFromInitData,
+        getCDMData
     };
 
     return instance;
 }
 
 KeySystemWidevine.__dashjs_factory_name = 'KeySystemWidevine';
-export default dashjs.FactoryMaker.getSingletonFactory(KeySystemWidevine); /* jshint ignore:line */
+export default FactoryMaker.getSingletonFactory(KeySystemWidevine);

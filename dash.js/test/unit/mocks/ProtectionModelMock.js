@@ -1,5 +1,5 @@
-import ProtectionErrors from '../../../src/streaming/protection/errors/ProtectionErrors';
-import DashJSError from '../../../src/streaming/vo/DashJSError';
+import ProtectionErrors from '../../../src/streaming/protection/errors/ProtectionErrors.js';
+import DashJSError from '../../../src/streaming/vo/DashJSError.js';
 
 function ProtectionModelMock (config) {
 
@@ -14,6 +14,7 @@ function ProtectionModelMock (config) {
     };
 
     this.requestKeySystemAccess = function () {
+        return Promise.resolve();
     };
 }
 

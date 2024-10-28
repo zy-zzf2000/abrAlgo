@@ -28,77 +28,57 @@
  *  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  *  POSSIBILITY OF SUCH DAMAGE.
  */
-import DashConstants from '../constants/DashConstants';
-import FactoryMaker from '../../core/FactoryMaker';
-import TimelineSegmentsGetter from '../utils/TimelineSegmentsGetter';
-import TemplateSegmentsGetter from '../utils/TemplateSegmentsGetter';
-import ListSegmentsGetter from '../utils/ListSegmentsGetter';
-import SegmentBaseGetter from '../utils/SegmentBaseGetter';
-
-import SegmentBaseLoader from '../SegmentBaseLoader';
-import WebmSegmentBaseLoader from '../WebmSegmentBaseLoader';
-
+import FactoryMaker from '../../core/FactoryMaker.js';
+import TimelineSegmentsGetter from '../utils/TimelineSegmentsGetter.js';
+import TemplateSegmentsGetter from '../utils/TemplateSegmentsGetter.js';
+import ListSegmentsGetter from '../utils/ListSegmentsGetter.js';
+import SegmentBaseGetter from '../utils/SegmentBaseGetter.js';
 
 function SegmentsController(config) {
     config = config || {};
 
     const context = this.context;
-
-    const dashMetrics = config.dashMetrics;
-    const mediaPlayerModel = config.mediaPlayerModel;
-    const errHandler = config.errHandler;
-    const baseURLController = config.baseURLController;
+    const dashConstants = config.dashConstants;
+    const type = config.type;
+    const segmentBaseController = config.segmentBaseController;
 
     let instance,
-        getters,
-        segmentBaseLoader;
+        getters;
 
     function setup() {
         getters = {};
-
-        segmentBaseLoader = isWebM(config.mimeType) ? WebmSegmentBaseLoader(context).getInstance() : SegmentBaseLoader(context).getInstance();
-        segmentBaseLoader.setConfig({
-            baseURLController: baseURLController,
-            dashMetrics: dashMetrics,
-            mediaPlayerModel: mediaPlayerModel,
-            errHandler: errHandler
-        });
-    }
-
-    function isWebM(mimeType) {
-        const type = mimeType ? mimeType.split('/')[1] : '';
-        return 'webm' === type.toLowerCase();
     }
 
     function initialize(isDynamic) {
-        segmentBaseLoader.initialize();
-
-        getters[DashConstants.SEGMENT_TIMELINE] = TimelineSegmentsGetter(context).create(config, isDynamic);
-        getters[DashConstants.SEGMENT_TEMPLATE] = TemplateSegmentsGetter(context).create(config, isDynamic);
-        getters[DashConstants.SEGMENT_LIST] = ListSegmentsGetter(context).create(config, isDynamic);
-        getters[DashConstants.SEGMENT_BASE] = SegmentBaseGetter(context).create(config, isDynamic);
+        getters[dashConstants.SEGMENT_TIMELINE] = TimelineSegmentsGetter(context).create(config, isDynamic);
+        getters[dashConstants.SEGMENT_TEMPLATE] = TemplateSegmentsGetter(context).create(config, isDynamic);
+        getters[dashConstants.SEGMENT_LIST] = ListSegmentsGetter(context).create(config, isDynamic);
+        getters[dashConstants.SEGMENT_BASE] = SegmentBaseGetter(context).create(config, isDynamic);
     }
 
-    function update(voRepresentation, type, hasInitialization, hasSegments) {
-        if (!hasInitialization) {
-            updateInitSegment(voRepresentation);
+    function updateInitData(voRepresentation, hasInitialization) {
+        if (hasInitialization) {
+            return Promise.resolve();
         }
+        return segmentBaseController.getSegmentBaseInitSegment({
+            representation: voRepresentation,
+            mediaType: type
+        });
+    }
 
-        if (!hasSegments) {
-            updateSegments(voRepresentation, type);
+    function updateSegmentData(voRepresentation, hasSegments) {
+        if (hasSegments) {
+            return Promise.resolve();
         }
-    }
-
-    function updateInitSegment(voRepresentation) {
-        segmentBaseLoader.loadInitialization(voRepresentation);
-    }
-
-    function updateSegments(voRepresentation, type) {
-        segmentBaseLoader.loadSegments(voRepresentation, type, voRepresentation ? voRepresentation.indexRange : null);
+        return segmentBaseController.getSegmentList({
+            mimeType: voRepresentation.mimeType,
+            representation: voRepresentation,
+            mediaType: type
+        });
     }
 
     function getSegmentsGetter(representation) {
-        return representation ? representation.segments ? getters[DashConstants.SEGMENT_BASE] : getters[representation.segmentInfoType] : null;
+        return representation ? representation.segments ? getters[dashConstants.SEGMENT_BASE] : getters[representation.segmentInfoType] : null;
     }
 
     function getSegmentByIndex(representation, index, lastSegmentTime) {
@@ -111,11 +91,21 @@ function SegmentsController(config) {
         return getter ? getter.getSegmentByTime(representation, time) : null;
     }
 
+    function getMediaFinishedInformation(representation) {
+        const getter = getSegmentsGetter(representation);
+        return getter ? getter.getMediaFinishedInformation(representation) : {
+            numberOfSegments: 0,
+            mediaTimeOfLastSignaledSegment: NaN
+        };
+    }
+
     instance = {
-        initialize: initialize,
-        update: update,
-        getSegmentByIndex: getSegmentByIndex,
-        getSegmentByTime: getSegmentByTime
+        initialize,
+        updateInitData,
+        updateSegmentData,
+        getSegmentByIndex,
+        getSegmentByTime,
+        getMediaFinishedInformation
     };
 
     setup();

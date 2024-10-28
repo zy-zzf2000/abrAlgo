@@ -31,9 +31,9 @@
 /**
  * @classdesc matches and converts xs:duration to seconds
  */
-import BaseMatcher from './BaseMatcher';
-import Constants from '../../../streaming/constants/Constants';
-import DashConstants from '../../constants/DashConstants';
+import BaseMatcher from './BaseMatcher.js';
+import Constants from '../../../streaming/constants/Constants.js';
+import DashConstants from '../../constants/DashConstants.js';
 
 const durationRegex = /^([-])?P(([\d.]*)Y)?(([\d.]*)M)?(([\d.]*)D)?T?(([\d.]*)H)?(([\d.]*)M)?(([\d.]*)S)?/;
 
@@ -46,18 +46,18 @@ const SECONDS_IN_MIN = 60;
 class DurationMatcher extends BaseMatcher {
     constructor() {
         super(
-            attr => {
+            (tagName, attrName, value) => {
                 const attributeList = [
                     DashConstants.MIN_BUFFER_TIME, DashConstants.MEDIA_PRESENTATION_DURATION,
                     DashConstants.MINIMUM_UPDATE_PERIOD, DashConstants.TIMESHIFT_BUFFER_DEPTH, DashConstants.MAX_SEGMENT_DURATION,
-                    DashConstants.MAX_SUBSEGMENT_DURATION, Constants.SUGGESTED_PRESENTATION_DELAY, DashConstants.START,
+                    DashConstants.MAX_SUBSEGMENT_DURATION, DashConstants.SUGGESTED_PRESENTATION_DELAY, DashConstants.START,
                     Constants.START_TIME, DashConstants.DURATION
                 ];
                 const len = attributeList.length;
 
                 for (let i = 0; i < len; i++) {
-                    if (attr.nodeName === attributeList[i]) {
-                        return durationRegex.test(attr.value);
+                    if (attrName === attributeList[i]) {
+                        return durationRegex.test(value);
                     }
                 }
 
@@ -66,12 +66,12 @@ class DurationMatcher extends BaseMatcher {
             str => {
                 //str = "P10Y10M10DT10H10M10.1S";
                 const match = durationRegex.exec(str);
-                let result = (parseFloat(match[2] || 0) * SECONDS_IN_YEAR +
-                    parseFloat(match[4] || 0) * SECONDS_IN_MONTH +
-                    parseFloat(match[6] || 0) * SECONDS_IN_DAY +
-                    parseFloat(match[8] || 0) * SECONDS_IN_HOUR +
-                    parseFloat(match[10] || 0) * SECONDS_IN_MIN +
-                    parseFloat(match[12] || 0));
+                let result = (parseFloat(match[3] || 0) * SECONDS_IN_YEAR +
+                    parseFloat(match[5] || 0) * SECONDS_IN_MONTH +
+                    parseFloat(match[7] || 0) * SECONDS_IN_DAY +
+                    parseFloat(match[9] || 0) * SECONDS_IN_HOUR +
+                    parseFloat(match[11] || 0) * SECONDS_IN_MIN +
+                    parseFloat(match[13] || 0));
 
                 if (match[1] !== undefined) {
                     result = -result;

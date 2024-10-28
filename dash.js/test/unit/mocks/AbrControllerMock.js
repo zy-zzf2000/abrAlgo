@@ -1,5 +1,3 @@
-import ThroughputHistoryMock from './ThroughputHistoryMock';
-
 const QUALITY_DEFAULT = 0;
 
 function AbrControllerMock () {
@@ -7,8 +5,9 @@ function AbrControllerMock () {
     this.elementWidth = undefined;
     this.elementHeight = undefined;
     this.windowResizeEventCalled = false;
-    this.throughputHistory = undefined;
     this.currentStreamId = undefined;
+    this.topBitrateInfo = null;
+    let self = this;
 
     this.QUALITY_DEFAULT = function () {
         return QUALITY_DEFAULT;
@@ -23,10 +22,15 @@ function AbrControllerMock () {
 
     this.setConfig = function () {};
 
-    this.getTopQualityIndexFor = function () {};
+    this.getMaxAllowedIndexFor = function () {};
+
 
     this.getTopBitrateInfoFor = function () {
-        return null;
+        return self.topBitrateInfo;
+    };
+
+    this.setTopBitrateInfo = function (info) {
+        self.topBitrateInfo = info;
     };
 
     this.getInitialBitrateFor = function (/*type*/) {
@@ -47,10 +51,6 @@ function AbrControllerMock () {
 
     this.getBitrateList = function () {
         return [];
-    };
-
-    this.getThroughputHistory = function () {
-        return this.throughputHistory;
     };
 
     this.updateTopQualityIndex = function () {};
@@ -99,15 +99,21 @@ function AbrControllerMock () {
         return this.elementHeight;
     };
 
-    this.registerStreamType = function () {
-        this.throughputHistory = new ThroughputHistoryMock();
-    };
-
     this.unRegisterStreamType = function (/*type*/) {
     };
 
 
     this.getMinAllowedIndexFor = function () {};
+
+    this.clearDataForStream = function () {};
+
+    this.getPossibleVoRepresentations = function () {
+        return []
+    }
+
+    this.getPossibleVoRepresentationsFilteredBySettings = function () {
+        return []
+    }
 }
 
 export default AbrControllerMock;

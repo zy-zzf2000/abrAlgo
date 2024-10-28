@@ -28,9 +28,9 @@
  *  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  *  POSSIBILITY OF SUCH DAMAGE.
  */
-import EventBus from './EventBus';
-import Events from './events/Events';
-import FactoryMaker from './FactoryMaker';
+import EventBus from './EventBus.js';
+import Events from './events/Events.js';
+import FactoryMaker from './FactoryMaker.js';
 
 const LOG_LEVEL_NONE = 0;
 const LOG_LEVEL_FATAL = 1;
@@ -108,6 +108,7 @@ function Debug(config) {
     function setLogTimestampVisible(value) {
         showLogTimestamp = value;
     }
+
     /**
      * Prepends the callee object name, and media type if available, to each log message.
      * @param {boolean} value Set to true if you want to see the callee object name and media type in each log message.
@@ -164,12 +165,14 @@ function Debug(config) {
         });
 
         // log to console if the log level is high enough
-        if (logFn[level] && settings.get().debug.logLevel >= level) {
+        if (logFn[level] && settings && settings.get().debug.logLevel >= level) {
             logFn[level](message);
         }
 
         // send log event regardless of log level
-        eventBus.trigger(Events.LOG, {message: message, level: level});
+        if (settings && settings.get().debug.dispatchEvent) {
+            eventBus.trigger(Events.LOG, { message: message, level: level });
+        }
     }
 
     instance = {

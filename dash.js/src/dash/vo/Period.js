@@ -39,6 +39,8 @@ class Period {
         this.duration = NaN;
         this.start = NaN;
         this.mpd = null;
+        this.nextPeriodId = null;
+        this.isEncrypted = false;
     }
 }
 

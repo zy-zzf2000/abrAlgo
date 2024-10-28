@@ -29,12 +29,13 @@
  *  POSSIBILITY OF SUCH DAMAGE.
  */
 
-import KeyPair from '../vo/KeyPair';
-import ClearKeyKeySet from '../vo/ClearKeyKeySet';
-import CommonEncryption from '../CommonEncryption';
-import ProtectionConstants from '../../constants/ProtectionConstants';
+import KeyPair from '../vo/KeyPair.js';
+import ClearKeyKeySet from '../vo/ClearKeyKeySet.js';
+import CommonEncryption from '../CommonEncryption.js';
+import ProtectionConstants from '../../constants/ProtectionConstants.js';
+import FactoryMaker from '../../../core/FactoryMaker.js';
 
-const uuid = '1077efec-c0b2-4d02-ace3-3c1e52e2fb4b';
+const uuid = ProtectionConstants.W3C_CLEARKEY_UUID;
 const systemString = ProtectionConstants.CLEARKEY_KEYSTEM_STRING;
 const schemeIdURI = 'urn:uuid:' + uuid;
 
@@ -45,7 +46,7 @@ function KeySystemW3CClearKey(config) {
     /**
      * Returns desired clearkeys (as specified in the CDM message) from protection data
      *
-     * @param {ProtectionData} protectionData the protection data
+     * @param {ProtectionDataSet} protectionData the protection data
      * @param {ArrayBuffer} message the ClearKey CDM message
      * @returns {ClearKeyKeySet} the key set or null if none found
      * @throws {Error} if a keyID specified in the CDM message was not found in the
@@ -91,11 +92,7 @@ function KeySystemW3CClearKey(config) {
         return null;
     }
 
-    function getCDMData() {
-        return null;
-    }
-
-    function getSessionId(/*cp*/) {
+    function getCDMData(/*cdmData*/) {
         return null;
     }
 
@@ -108,7 +105,6 @@ function KeySystemW3CClearKey(config) {
         getLicenseRequestFromMessage: getLicenseRequestFromMessage,
         getLicenseServerURLFromInitData: getLicenseServerURLFromInitData,
         getCDMData: getCDMData,
-        getSessionId: getSessionId,
         getClearKeysFromProtectionData: getClearKeysFromProtectionData
     };
 
@@ -116,5 +112,5 @@ function KeySystemW3CClearKey(config) {
 }
 
 KeySystemW3CClearKey.__dashjs_factory_name = 'KeySystemW3CClearKey';
-export default dashjs.FactoryMaker.getSingletonFactory(KeySystemW3CClearKey); /* jshint ignore:line */
+export default FactoryMaker.getSingletonFactory(KeySystemW3CClearKey);
 

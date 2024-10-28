@@ -28,15 +28,21 @@
  *  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  *  POSSIBILITY OF SUCH DAMAGE.
  */
-import FactoryMaker from '../../core/FactoryMaker';
-import Debug from '../../core/Debug';
+import FactoryMaker from '../../core/FactoryMaker.js';
+import Debug from '../../core/Debug.js';
+import EventBus from '../../core/EventBus.js';
+import MediaPlayerEvents from '../MediaPlayerEvents.js';
 
 function MediaSourceController() {
 
     let instance,
+        mediaSource,
+        settings,
+        mediaSourceType,
         logger;
 
     const context = this.context;
+    const eventBus = EventBus(context).getInstance();
 
     function setup() {
         logger = Debug(context).getInstance().getLogger(instance);
@@ -46,21 +52,40 @@ function MediaSourceController() {
 
         let hasWebKit = ('WebKitMediaSource' in window);
         let hasMediaSource = ('MediaSource' in window);
+        let hasManagedMediaSource = ('ManagedMediaSource' in window);
 
-        if (hasMediaSource) {
-            return new MediaSource();
+        if (hasManagedMediaSource) {
+            // eslint-disable-next-line no-undef
+            mediaSource = new ManagedMediaSource();
+            mediaSourceType = 'managedMediaSource';
+            logger.info(`Created ManagedMediaSource`)
+        } else if (hasMediaSource) {
+            mediaSource = new MediaSource();
+            mediaSourceType = 'mediaSource';
+            logger.info(`Created MediaSource`)
         } else if (hasWebKit) {
-            return new WebKitMediaSource();
+            mediaSource = new WebKitMediaSource();
+            logger.info(`Created WebkitMediaSource`)
         }
 
-        return null;
+        return mediaSource;
     }
 
-    function attachMediaSource(source, videoModel) {
+    function attachMediaSource(videoModel) {
 
-        let objectURL = window.URL.createObjectURL(source);
+        let objectURL = window.URL.createObjectURL(mediaSource);
 
         videoModel.setSource(objectURL);
+
+        if (mediaSourceType === 'managedMediaSource') {
+            videoModel.setDisableRemotePlayback(true);
+            mediaSource.addEventListener('startstreaming', () => {
+                eventBus.trigger(MediaPlayerEvents.MANAGED_MEDIA_SOURCE_START_STREAMING)
+            })
+            mediaSource.addEventListener('endstreaming', () => {
+                eventBus.trigger(MediaPlayerEvents.MANAGED_MEDIA_SOURCE_END_STREAMING)
+            })
+        }
 
         return objectURL;
     }
@@ -69,19 +94,34 @@ function MediaSourceController() {
         videoModel.setSource(null);
     }
 
-    function setDuration(source, value) {
+    function setDuration(value) {
+        if (!mediaSource || mediaSource.readyState !== 'open') {
+            return;
+        }
+        if (value === null && isNaN(value)) {
+            return;
+        }
+        if (mediaSource.duration === value) {
+            return;
+        }
 
-        if (source.duration != value)
-            source.duration = value;
+        if (value === Infinity && !settings.get().streaming.buffer.mediaSourceDurationInfinity) {
+            value = Math.pow(2, 32);
+        }
 
-        return source.duration;
+        if (!isBufferUpdating(mediaSource)) {
+            logger.info('Set MediaSource duration:' + value);
+            mediaSource.duration = value;
+        } else {
+            setTimeout(setDuration.bind(null, value), 50);
+        }
     }
 
-    function setSeekable(source, start, end) {
-        if (source && typeof source.setLiveSeekableRange === 'function' && typeof source.clearLiveSeekableRange === 'function' &&
-                source.readyState === 'open' && start >= 0 && start < end) {
-            source.clearLiveSeekableRange();
-            source.setLiveSeekableRange(start, end);
+    function setSeekable(start, end) {
+        if (mediaSource && typeof mediaSource.setLiveSeekableRange === 'function' && typeof mediaSource.clearLiveSeekableRange === 'function' &&
+            mediaSource.readyState === 'open' && start >= 0 && start < end) {
+            mediaSource.clearLiveSeekableRange();
+            mediaSource.setLiveSeekableRange(start, end);
         }
     }
 
@@ -104,13 +144,37 @@ function MediaSourceController() {
         source.endOfStream();
     }
 
+    function isBufferUpdating(source) {
+        let buffers = source.sourceBuffers;
+        for (let i = 0; i < buffers.length; i++) {
+            if (buffers[i].updating) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Set the config of the MediaSourceController
+     * @param {object} config
+     */
+    function setConfig(config) {
+        if (!config) {
+            return;
+        }
+        if (config.settings) {
+            settings = config.settings;
+        }
+    }
+
     instance = {
-        createMediaSource: createMediaSource,
-        attachMediaSource: attachMediaSource,
-        detachMediaSource: detachMediaSource,
-        setDuration: setDuration,
-        setSeekable: setSeekable,
-        signalEndOfStream: signalEndOfStream
+        attachMediaSource,
+        createMediaSource,
+        detachMediaSource,
+        setConfig,
+        setDuration,
+        setSeekable,
+        signalEndOfStream,
     };
 
     setup();

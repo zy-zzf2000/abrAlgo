@@ -8,11 +8,16 @@ class MediaControllerMock {
         this.initialSettings = {};
         this.switchMode = {};
         this.selectionMode = undefined;
-        this.track  = undefined;
+        this.track = undefined;
         this.tracks = [];
     }
 
-    checkInitialMediaSettingsForType() {}
+    initialize() {
+
+    }
+
+    checkInitialMediaSettingsForType() {
+    }
 
     addTrack(track) {
         this.tracks.push(track);
@@ -40,7 +45,9 @@ class MediaControllerMock {
      * @memberof MediaController#
      */
     setTrack(track) {
-        if (!track) return;
+        if (!track) {
+            return;
+        }
         this.track = track;
     }
 
@@ -50,7 +57,9 @@ class MediaControllerMock {
      * @memberof MediaController#
      */
     setInitialSettings(type, value) {
-        if (!type || !value) return;
+        if (!type || !value) {
+            return;
+        }
 
         this.initialSettings[type] = value;
     }
@@ -61,7 +70,9 @@ class MediaControllerMock {
      * @memberof MediaController#
      */
     getInitialSettings(type) {
-        if (!type) return null;
+        if (!type) {
+            return null;
+        }
 
         return this.initialSettings[type];
     }
@@ -84,31 +95,31 @@ class MediaControllerMock {
         return this.switchMode[type];
     }
 
-    /**
-     * @param {string} mode
-     * @memberof MediaController#
-     */
-    setSelectionModeForInitialTrack(mode) {
-        this.selectionMode = mode;
-    }
-
-    getSelectionModeForInitialTrack() {
-        return this.selectionMode;
-    }
-
     isMultiTrackSupportedByType(type) {
-        return (type === 'audio' || type === 'video' || type === 'text' || type === 'fragmentedText');
+        return (type === 'audio' || type === 'video' || type === 'text');
     }
 
-    isTracksEqual(currentTrack, mediaInfoForType) {
+    areTracksEqual(currentTrack, mediaInfoForType) {
         return (mediaInfoForType.lang === 'deu');
     }
 
-    setConfig() {}
+    matchSettings(settings, track) {
+        const matchRole = !settings.role || !!track.roles.filter(function (item) {
+            return item === settings.role;
+        })[0];
+        return settings.lang === track.lang && matchRole;
+    }
+
+    setConfig() {
+    }
+
+    saveTextSettingsDisabled() {
+    }
 
     reset() {
         this.setup();
     }
 
 }
+
 export default MediaControllerMock;

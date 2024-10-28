@@ -1,26 +1,28 @@
-import StreamInfo from '../../../src/dash/vo/StreamInfo';
-import MediaInfo from '../../../src/dash/vo/MediaInfo';
-import MpdHelper from './MPDHelper';
-import SpecHelper from './SpecHelper';
-import Representation from '../../../src/dash/vo/Representation';
-import FragmentRequest from '../../../src/streaming/vo/FragmentRequest';
-import { HTTPRequest } from '../../../src/streaming/vo/metrics/HTTPRequest';
+import StreamInfo from '../../../src/dash/vo/StreamInfo.js';
+import MediaInfo from '../../../src/dash/vo/MediaInfo.js';
+import MpdHelper from './MPDHelper.js';
+import SpecHelper from './SpecHelper.js';
+import Representation from '../../../src/dash/vo/Representation.js';
+import FragmentRequest from '../../../src/streaming/vo/FragmentRequest.js';
+import {HTTPRequest} from '../../../src/streaming/vo/metrics/HTTPRequest.js';
+import DashConstants from '../../../src/dash/constants/DashConstants.js';
 
 class VoHelper {
     constructor() {
         this.mpdHelper = new MpdHelper();
         this.specHelper = new SpecHelper();
         this.voRep = undefined;
+        this.voTimelineRep = undefined;
         this.voAdaptation = undefined;
         this.unixTime = this.specHelper.getUnixTime();
         this.adaptation = undefined;
         this.defaultMpdType = 'static';
     }
 
-    createMpd(type) {
+    createMpd(type, segInfoType) {
         var mpd = {};
 
-        mpd.manifest = this.mpdHelper.getMpd(type || this.defaultMpdType);
+        mpd.manifest = this.mpdHelper.getMpd(type || this.defaultMpdType, segInfoType);
         mpd.suggestedPresentationDelay = 0;
         mpd.availabilityStartTime = this.unixTime;
         mpd.availabilityEndTime = Number.POSITIVE_INFINITY;
@@ -30,10 +32,10 @@ class VoHelper {
         return mpd;
     }
 
-    createPeriod() {
+    createPeriod(segInfoType) {
         var period = {};
 
-        period.mpd = this.createMpd();
+        period.mpd = this.createMpd(this.defaultMpdType, segInfoType);
         period.start = 0;
 
         period.id = 'id1';
@@ -46,9 +48,9 @@ class VoHelper {
         return period;
     }
 
-    createAdaptation(type) {
+    createAdaptation(type, segInfoType) {
         var adaptation = {};
-        adaptation.period = this.createPeriod();
+        adaptation.period = this.createPeriod(segInfoType);
         adaptation.index = 0;
         adaptation.type = type;
 
@@ -58,7 +60,7 @@ class VoHelper {
     createRepresentation(type, index) {
         var rep = new Representation();
 
-        rep.id = null;
+        rep.id = index;
         rep.index = index || 0;
         rep.adaptation = this.createAdaptation(type);
         rep.fragmentInfoType = null;
@@ -69,9 +71,38 @@ class VoHelper {
         rep.indexRange = null;
         rep.range = null;
         rep.presentationTimeOffset = 10;
+        rep.bandwidth = 1000000;
+        rep.bitrateInKbit = 1000;
+        rep.segmentInfoType = DashConstants.SEGMENT_TEMPLATE;
         // Set the source buffer timeOffset to this
-        rep.MSETimeOffset = NaN;
-        rep.segmentAvailabilityRange = null;
+        rep.mseTimeOffset = NaN;
+        rep.segmentAvailabilityWindow = null;
+        rep.availableSegmentsNumber = 0;
+        rep.mediaInfo = this.getDummyMediaInfo(type);
+
+        return rep;
+    }
+
+    createTimelineRepresentation(type, index) {
+        var rep = new Representation();
+
+        rep.id = index;
+        rep.index = index || 0;
+        rep.adaptation = this.createAdaptation(type, 1);
+        rep.fragmentInfoType = null;
+        rep.initialization = 'https://dash.akamaized.net/envivio/dashpr/clear/video4/Header.m4s';
+        rep.segmentDuration = 1;
+        rep.bandwidth = 1000000;
+        rep.bitrateInKbit = 1000;
+        rep.timescale = 1;
+        rep.startNumber = 1;
+        rep.indexRange = null;
+        rep.range = null;
+        rep.presentationTimeOffset = 10;
+        rep.segmentInfoType = DashConstants.SEGMENT_TIMELINE;
+        // Set the source buffer timeOffset to this
+        rep.mseTimeOffset = NaN;
+        rep.segmentAvailabilityWindow = null;
         rep.availableSegmentsNumber = 0;
 
         return rep;
@@ -86,6 +117,11 @@ class VoHelper {
         req.url = 'https://dash.akamaized.net/envivio/dashpr/clear/video4/Header.m4s';
         req.startTime = NaN;
         req.duration = NaN;
+        req.mediaInfo = {
+            streamInfo: {
+                id: 'streamId'
+            }
+        }
 
         if (type === HTTPRequest.MEDIA_SEGMENT_TYPE) {
             req.url = 'https://dash.akamaized.net/envivio/dashpr/clear/video4/0.m4s';
@@ -105,6 +141,10 @@ class VoHelper {
 
     getDummyRepresentation(type, index) {
         return this.voRep || this.createRepresentation(type, index);
+    }
+
+    getDummyTimelineRepresentation(type, index) {
+        return this.voTimelineRep || this.createTimelineRepresentation(type, index);
     }
 
     getDummyMpd(type) {

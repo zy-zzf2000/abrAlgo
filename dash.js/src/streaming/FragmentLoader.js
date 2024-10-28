@@ -28,50 +28,48 @@
  *  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  *  POSSIBILITY OF SUCH DAMAGE.
  */
-import HTTPLoader from './net/HTTPLoader';
-import HeadRequest from './vo/HeadRequest';
-import DashJSError from './vo/DashJSError';
-import EventBus from './../core/EventBus';
-import BoxParser from '../streaming/utils/BoxParser';
-import Events from './../core/events/Events';
-import Errors from './../core/errors/Errors';
-import FactoryMaker from '../core/FactoryMaker';
+import Constants from './constants/Constants.js';
+import URLLoader from './net/URLLoader.js';
+import HeadRequest from './vo/HeadRequest.js';
+import DashJSError from './vo/DashJSError.js';
+import FactoryMaker from '../core/FactoryMaker.js';
 
 function FragmentLoader(config) {
 
     config = config || {};
     const context = this.context;
-    const eventBus = EventBus(context).getInstance();
+    const eventBus = config.eventBus;
+    const events = config.events;
+    const urlUtils = config.urlUtils;
+    const errors = config.errors;
+    const streamId = config.streamId;
 
     let instance,
-        httpLoader;
+        urlLoader;
 
     function setup() {
-        const boxParser = BoxParser(context).getInstance();
-        httpLoader = HTTPLoader(context).create({
+        urlLoader = URLLoader(context).create({
             errHandler: config.errHandler,
+            errors: errors,
             dashMetrics: config.dashMetrics,
             mediaPlayerModel: config.mediaPlayerModel,
-            requestModifier: config.requestModifier,
-            boxParser: boxParser,
-            useFetch: config.settings.get().streaming.lowLatencyEnabled
+            urlUtils: urlUtils,
+            constants: Constants,
+            boxParser: config.boxParser,
+            dashConstants: config.dashConstants,
+            requestTimeout: config.settings.get().streaming.fragmentRequestTimeout
         });
     }
 
     function checkForExistence(request) {
         const report = function (success) {
-            eventBus.trigger(
-                Events.CHECK_FOR_EXISTENCE_COMPLETED, {
-                    request: request,
-                    exists: success
-                }
+            eventBus.trigger(events.CHECK_FOR_EXISTENCE_COMPLETED, { request: request, exists: success }
             );
         };
 
         if (request) {
             let headRequest = new HeadRequest(request.url);
-
-            httpLoader.load({
+            urlLoader.load({
                 request: headRequest,
                 success: function () {
                     report(true);
@@ -87,7 +85,7 @@ function FragmentLoader(config) {
 
     function load(request) {
         const report = function (data, error) {
-            eventBus.trigger(Events.LOADING_COMPLETED, {
+            eventBus.trigger(events.LOADING_COMPLETED, {
                 request: request,
                 response: data || null,
                 error: error || null,
@@ -96,15 +94,18 @@ function FragmentLoader(config) {
         };
 
         if (request) {
-            httpLoader.load({
+            urlLoader.load({
                 request: request,
                 progress: function (event) {
-                    eventBus.trigger(Events.LOADING_PROGRESS, {
+                    eventBus.trigger(events.LOADING_PROGRESS, {
                         request: request,
-                        stream: event.stream
+                        stream: event.stream,
+                        streamId
                     });
+
+                    // Only in case of FetchAPI and low latency streaming. XHR does not have data attribute.
                     if (event.data) {
-                        eventBus.trigger(Events.LOADING_DATA_PROGRESS, {
+                        eventBus.trigger(events.LOADING_DATA_PROGRESS, {
                             request: request,
                             response: event.data || null,
                             error: null,
@@ -119,7 +120,7 @@ function FragmentLoader(config) {
                     report(
                         undefined,
                         new DashJSError(
-                            Errors.FRAGMENT_LOADER_LOADING_FAILURE_ERROR_CODE,
+                            errors.FRAGMENT_LOADER_LOADING_FAILURE_ERROR_CODE,
                             errorText,
                             statusText
                         )
@@ -127,7 +128,11 @@ function FragmentLoader(config) {
                 },
                 abort: function (request) {
                     if (request) {
-                        eventBus.trigger(Events.LOADING_ABANDONED, {request: request, mediaType: request.mediaType, sender: instance});
+                        eventBus.trigger(events.LOADING_ABANDONED, {
+                            mediaType: request.mediaType,
+                            request: request,
+                            sender: instance
+                        });
                     }
                 }
             });
@@ -135,31 +140,39 @@ function FragmentLoader(config) {
             report(
                 undefined,
                 new DashJSError(
-                    Errors.FRAGMENT_LOADER_NULL_REQUEST_ERROR_CODE,
-                    Errors.FRAGMENT_LOADER_NULL_REQUEST_ERROR_MESSAGE
+                    errors.FRAGMENT_LOADER_NULL_REQUEST_ERROR_CODE,
+                    errors.FRAGMENT_LOADER_NULL_REQUEST_ERROR_MESSAGE
                 )
             );
         }
     }
 
     function abort() {
-        if (httpLoader) {
-            httpLoader.abort();
+        if (urlLoader) {
+            urlLoader.abort();
+        }
+    }
+
+    function resetInitialSettings() {
+        if (urlLoader) {
+            urlLoader.resetInitialSettings();
         }
     }
 
     function reset() {
-        if (httpLoader) {
-            httpLoader.abort();
-            httpLoader = null;
+        if (urlLoader) {
+            urlLoader.abort();
+            urlLoader.reset();
+            urlLoader = null;
         }
     }
 
     instance = {
-        checkForExistence: checkForExistence,
-        load: load,
-        abort: abort,
-        reset: reset
+        abort,
+        checkForExistence,
+        load,
+        reset,
+        resetInitialSettings
     };
 
     setup();

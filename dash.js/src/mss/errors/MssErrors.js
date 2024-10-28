@@ -28,13 +28,14 @@
  *  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  *  POSSIBILITY OF SUCH DAMAGE.
  */
-import ErrorsBase from '../../core/errors/ErrorsBase';
+import ErrorsBase from '../../core/errors/ErrorsBase.js';
+
 /**
  * @class
  *
  */
 class MssErrors extends ErrorsBase {
-	constructor () {
+    constructor() {
         super();
         /**
          * Error code returned when no tfrf box is detected in MSS live stream

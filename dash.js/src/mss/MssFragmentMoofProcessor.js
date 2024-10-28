@@ -28,10 +28,11 @@
  *  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  *  POSSIBILITY OF SUCH DAMAGE.
  */
-import DashJSError from '../streaming/vo/DashJSError';
-import MssErrors from './errors/MssErrors';
+import DashJSError from '../streaming/vo/DashJSError.js';
+import MssErrors from './errors/MssErrors.js';
 
-import Events from '../streaming/MediaPlayerEvents';
+import Events from '../streaming/MediaPlayerEvents.js';
+import FactoryMaker from '../core/FactoryMaker.js';
 
 /**
  * @module MssFragmentMoofProcessor
@@ -61,11 +62,12 @@ function MssFragmentMoofProcessor(config) {
         const representation = representationController.getCurrentRepresentation();
 
         const manifest = representation.adaptation.period.mpd.manifest;
-        const adaptation = manifest.Period_asArray[representation.adaptation.period.index].AdaptationSet_asArray[representation.adaptation.index];
+        const adaptation = manifest.Period[representation.adaptation.period.index].AdaptationSet[representation.adaptation.index];
         const timescale = adaptation.SegmentTemplate.timescale;
 
         type = streamProcessor.getType();
 
+        // Process tfrf only for live streams or start-over static streams (timeShiftBufferDepth > 0)
         if (manifest.type !== 'dynamic' && !manifest.timeShiftBufferDepth) {
             return;
         }
@@ -83,6 +85,7 @@ function MssFragmentMoofProcessor(config) {
             range;
         let segment = null;
         let t = 0;
+        let endTime;
         let availabilityStartTime = null;
 
         if (entries.length === 0) {
@@ -102,16 +105,15 @@ function MssFragmentMoofProcessor(config) {
             }
         }
 
-        logger.debug('entry - t = ', (entry.fragment_absolute_time / timescale));
+        // logger.debug('entry - t = ', (entry.fragment_absolute_time / timescale));
 
         // Get last segment time
         segmentTime = segments[segments.length - 1].tManifest ? parseFloat(segments[segments.length - 1].tManifest) : segments[segments.length - 1].t;
-        logger.debug('Last segment - t = ', (segmentTime / timescale));
+        // logger.debug('Last segment - t = ', (segmentTime / timescale));
 
         // Check if we have to append new segment to timeline
         if (entry.fragment_absolute_time <= segmentTime) {
-            // Update DVR window range
-            // => set range end to end time of current segment
+            // Update DVR window range => set range end to end time of current segment
             range = {
                 start: segments[0].t / timescale,
                 end: (tfdt.baseMediaDecodeTime / timescale) + request.duration
@@ -121,7 +123,7 @@ function MssFragmentMoofProcessor(config) {
             return;
         }
 
-        logger.debug('Add new segment - t = ', (entry.fragment_absolute_time / timescale));
+        // logger.debug('Add new segment - t = ', (entry.fragment_absolute_time / timescale));
         segment = {};
         segment.t = entry.fragment_absolute_time;
         segment.d = entry.fragment_duration;
@@ -130,34 +132,49 @@ function MssFragmentMoofProcessor(config) {
             segment.t -= parseFloat(segments[0].tManifest) - segments[0].t;
             segment.tManifest = entry.fragment_absolute_time;
         }
+
+        // Patch previous segment duration
+        let lastSegment = segments[segments.length - 1];
+        if (lastSegment.t + lastSegment.d !== segment.t) {
+            logger.debug('Patch segment duration - t = ', lastSegment.t + ', d = ' + lastSegment.d + ' => ' + (segment.t - lastSegment.t));
+            lastSegment.d = segment.t - lastSegment.t;
+        }
+
         segments.push(segment);
 
         // In case of static start-over streams, update content duration
         if (manifest.type === 'static') {
             if (type === 'video') {
                 segment = segments[segments.length - 1];
-                var end = (segment.t + segment.d) / timescale;
-                if (end > representation.adaptation.period.duration) {
-                    eventBus.trigger(Events.MANIFEST_VALIDITY_CHANGED, { sender: this, newDuration: end });
+                endTime = (segment.t + segment.d) / timescale;
+                if (endTime > representation.adaptation.period.duration) {
+                    eventBus.trigger(Events.MANIFEST_VALIDITY_CHANGED, { sender: this, newDuration: endTime });
                 }
             }
             return;
-        }
-        // In case of live streams, update segment timeline according to DVR window
-        else if (manifest.timeShiftBufferDepth && manifest.timeShiftBufferDepth > 0) {
-            // Get timestamp of the last segment
-            segment = segments[segments.length - 1];
-            t = segment.t;
+        } else {
+            // In case of live streams, update segment timeline according to DVR window
+            if (manifest.timeShiftBufferDepth && manifest.timeShiftBufferDepth > 0) {
+                // Get timestamp of the last segment
+                segment = segments[segments.length - 1];
+                t = segment.t;
 
-            // Determine the segments' availability start time
-            availabilityStartTime = Math.round((t - (manifest.timeShiftBufferDepth * timescale)) / timescale);
+                // Determine the segments' availability start time
+                availabilityStartTime = (t - (manifest.timeShiftBufferDepth * timescale)) / timescale;
 
-            // Remove segments prior to availability start time
-            segment = segments[0];
-            while (Math.round(segment.t / timescale) < availabilityStartTime) {
-                logger.debug('Remove segment  - t = ' + (segment.t / timescale));
-                segments.splice(0, 1);
+                // Remove segments prior to availability start time
                 segment = segments[0];
+                endTime = (segment.t + segment.d) / timescale;
+                while (endTime < availabilityStartTime) {
+                    // Check if not currently playing the segment to be removed
+                    if (!playbackController.isPaused() && playbackController.getTime() < endTime) {
+                        break;
+                    }
+                    // logger.debug('Remove segment  - t = ' + (segment.t / timescale));
+                    segments.splice(0, 1);
+                    segment = segments[0];
+                    endTime = (segment.t + segment.d) / timescale;
+                }
             }
 
             // Update DVR window range => set range end to end time of current segment
@@ -169,14 +186,17 @@ function MssFragmentMoofProcessor(config) {
             updateDVR(type, range, streamProcessor.getStreamInfo().manifestInfo);
         }
 
-        representationController.updateRepresentation(representation, true);
     }
 
     function updateDVR(type, range, manifestInfo) {
+        if (type !== 'video' && type !== 'audio') {
+            return;
+        }
         const dvrInfos = dashMetrics.getCurrentDVRInfo(type);
         if (!dvrInfos || (range.end > dvrInfos.range.end)) {
-            logger.debug('Update DVR Infos [' + range.start + ' - ' + range.end + ']');
+            logger.debug('Update DVR range: [' + range.start + ' - ' + range.end + ']');
             dashMetrics.addDVRInfo(type, playbackController.getTime(), manifestInfo, range);
+            playbackController.updateCurrentTime(type);
         }
     }
 
@@ -194,7 +214,7 @@ function MssFragmentMoofProcessor(config) {
         return offset;
     }
 
-    function convertFragment(e, sp) {
+    function convertFragment(e, streamProcessor) {
         let i;
 
         // e.request contains request description object
@@ -202,7 +222,7 @@ function MssFragmentMoofProcessor(config) {
         const isoFile = ISOBoxer.parseBuffer(e.response);
         // Update track_Id in tfhd box
         const tfhd = isoFile.fetch('tfhd');
-        tfhd.track_ID = e.request.mediaInfo.index + 1;
+        tfhd.track_ID = e.request.representation.mediaInfo.index + 1;
 
         // Add tfdt box
         let tfdt = isoFile.fetch('tfdt');
@@ -224,7 +244,7 @@ function MssFragmentMoofProcessor(config) {
             tfxd = null;
         }
         let tfrf = isoFile.fetch('tfrf');
-        processTfrf(e.request, tfrf, tfdt, sp);
+        processTfrf(e.request, tfrf, tfdt, streamProcessor);
         if (tfrf) {
             tfrf._parent.boxes.splice(tfrf._parent.boxes.indexOf(tfrf), 1);
             tfrf = null;
@@ -290,7 +310,7 @@ function MssFragmentMoofProcessor(config) {
         e.response = isoFile.write();
     }
 
-    function updateSegmentList(e, sp) {
+    function updateSegmentList(e, streamProcessor) {
         // e.request contains request description object
         // e.response contains fragment bytes
         if (!e.response) {
@@ -300,7 +320,7 @@ function MssFragmentMoofProcessor(config) {
         const isoFile = ISOBoxer.parseBuffer(e.response);
         // Update track_Id in tfhd box
         const tfhd = isoFile.fetch('tfhd');
-        tfhd.track_ID = e.request.mediaInfo.index + 1;
+        tfhd.track_ID = e.request.representation.mediaInfo.index + 1;
 
         // Add tfdt box
         let tfdt = isoFile.fetch('tfdt');
@@ -313,7 +333,7 @@ function MssFragmentMoofProcessor(config) {
         }
 
         let tfrf = isoFile.fetch('tfrf');
-        processTfrf(e.request, tfrf, tfdt, sp);
+        processTfrf(e.request, tfrf, tfdt, streamProcessor);
         if (tfrf) {
             tfrf._parent.boxes.splice(tfrf._parent.boxes.indexOf(tfrf), 1);
             tfrf = null;
@@ -325,9 +345,9 @@ function MssFragmentMoofProcessor(config) {
     }
 
     instance = {
-        convertFragment: convertFragment,
-        updateSegmentList: updateSegmentList,
-        getType: getType
+        convertFragment,
+        updateSegmentList,
+        getType
     };
 
     setup();
@@ -335,4 +355,4 @@ function MssFragmentMoofProcessor(config) {
 }
 
 MssFragmentMoofProcessor.__dashjs_factory_name = 'MssFragmentMoofProcessor';
-export default dashjs.FactoryMaker.getClassFactory(MssFragmentMoofProcessor); /* jshint ignore:line */
+export default FactoryMaker.getClassFactory(MssFragmentMoofProcessor);

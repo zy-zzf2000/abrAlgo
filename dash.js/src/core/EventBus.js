@@ -28,7 +28,8 @@
  *  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  *  POSSIBILITY OF SUCH DAMAGE.
  */
-import FactoryMaker from './FactoryMaker';
+import FactoryMaker from './FactoryMaker.js';
+import MediaPlayerEvents from '../streaming/MediaPlayerEvents.js';
 
 const EVENT_PRIORITY_LOW = 0;
 const EVENT_PRIORITY_HIGH = 5000;
@@ -37,7 +38,7 @@ function EventBus() {
 
     let handlers = {};
 
-    function on(type, listener, scope, priority = EVENT_PRIORITY_LOW) {
+    function _commonOn(type, listener, scope, options = {}, executeOnlyOnce = false) {
 
         if (!type) {
             throw new Error('event type cannot be null or undefined');
@@ -46,18 +47,33 @@ function EventBus() {
             throw new Error('listener must be a function: ' + listener);
         }
 
-        if (getHandlerIdx(type, listener, scope) >= 0) return;
+        let priority = options.priority || EVENT_PRIORITY_LOW;
+
+        if (getHandlerIdx(type, listener, scope) >= 0) {
+            return;
+        }
 
         handlers[type] = handlers[type] || [];
 
         const handler = {
             callback: listener,
-            scope: scope,
-            priority: priority
+            scope,
+            priority,
+            executeOnlyOnce
         };
 
-        const inserted = handlers[type].some((item , idx) => {
-            if (item && priority > item.priority ) {
+        if (scope && scope.getStreamId) {
+            handler.streamId = scope.getStreamId();
+        }
+        if (scope && scope.getType) {
+            handler.mediaType = scope.getType();
+        }
+        if (options && options.mode) {
+            handler.mode = options.mode;
+        }
+
+        const inserted = handlers[type].some((item, idx) => {
+            if (item && priority > item.priority) {
                 handlers[type].splice(idx, 0, handler);
                 return true;
             }
@@ -68,33 +84,84 @@ function EventBus() {
         }
     }
 
+    function on(type, listener, scope, options = {}) {
+        _commonOn(type, listener, scope, options);
+    }
+
+    function once(type, listener, scope, options = {}) {
+        _commonOn(type, listener, scope, options, true)
+    }
+
     function off(type, listener, scope) {
-        if (!type || !listener || !handlers[type]) return;
+        if (!type || !listener || !handlers[type]) {
+            return;
+        }
         const idx = getHandlerIdx(type, listener, scope);
-        if (idx < 0) return;
+        if (idx < 0) {
+            return;
+        }
         handlers[type][idx] = null;
     }
 
-    function trigger(type, payload) {
-        if (!type || !handlers[type]) return;
+    function trigger(type, payload = {}, filters = {}) {
+        if (!type || !handlers[type]) {
+            return;
+        }
 
         payload = payload || {};
 
-        if (payload.hasOwnProperty('type')) throw new Error('\'type\' is a reserved word for event dispatching');
+        if (payload.hasOwnProperty('type')) {
+            throw new Error('\'type\' is a reserved word for event dispatching');
+        }
 
         payload.type = type;
 
-        handlers[type] = handlers[type].filter((item) => item);
-        handlers[type].forEach( handler => handler && handler.callback.call(handler.scope, payload) );
+        if (filters.streamId) {
+            payload.streamId = filters.streamId;
+        }
+        if (filters.mediaType) {
+            payload.mediaType = filters.mediaType;
+        }
+
+        const handlersToRemove = [];
+        handlers[type]
+            .filter((handler) => {
+                if (!handler) {
+                    return false;
+                }
+                if (filters.streamId && handler.streamId && handler.streamId !== filters.streamId) {
+                    return false;
+                }
+                if (filters.mediaType && handler.mediaType && handler.mediaType !== filters.mediaType) {
+                    return false;
+                }
+                // This is used for dispatching DASH events. By default we use the onStart mode. Consequently we filter everything that has a non matching mode and the onReceive events for handlers that did not specify a mode.
+                if ((filters.mode && handler.mode && handler.mode !== filters.mode) || (!handler.mode && filters.mode && filters.mode === MediaPlayerEvents.EVENT_MODE_ON_RECEIVE)) {
+                    return false;
+                }
+                return true;
+            })
+            .forEach((handler) => {
+                handler && handler.callback.call(handler.scope, payload);
+                if (handler.executeOnlyOnce) {
+                    handlersToRemove.push(handler);
+                }
+            });
+
+        handlersToRemove.forEach((handler) => {
+            off(type, handler.callback, handler.scope);
+        })
     }
 
     function getHandlerIdx(type, listener, scope) {
 
         let idx = -1;
 
-        if (!handlers[type]) return idx;
+        if (!handlers[type]) {
+            return idx;
+        }
 
-        handlers[type].some( (item, index) => {
+        handlers[type].some((item, index) => {
             if (item && item.callback === listener && (!scope || scope === item.scope)) {
                 idx = index;
                 return true;
@@ -108,10 +175,11 @@ function EventBus() {
     }
 
     const instance = {
-        on: on,
-        off: off,
-        trigger: trigger,
-        reset: reset
+        on,
+        once,
+        off,
+        trigger,
+        reset
     };
 
     return instance;

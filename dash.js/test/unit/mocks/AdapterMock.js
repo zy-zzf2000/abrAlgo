@@ -1,4 +1,4 @@
-function AdapterMock () {
+function AdapterMock() {
     this.metricsList = {
         BUFFER_STATE: 'BUFFER_STATE'
     };
@@ -20,11 +20,24 @@ function AdapterMock () {
     };
 
     this.getAllMediaInfoForType = function () {
-        return [{codec: 'audio/mp4;codecs="mp4a.40.2"', id: undefined, index: 0, isText: false, lang: 'eng',mimeType: 'audio/mp4', roles: ['main']},
-                {codec: 'audio/mp4;codecs="mp4a.40.2"', id: undefined, index: 1, isText: false, lang: 'deu',mimeType: 'audio/mp4', roles: ['main']}];
+        return [{
+            codec: 'audio/mp4;codecs="mp4a.40.2"',
+            id: undefined,
+            index: 0,
+            lang: 'eng',
+            mimeType: 'audio/mp4',
+            roles: ['main']
+        }, {
+            codec: 'audio/mp4;codecs="mp4a.40.2"',
+            id: undefined,
+            index: 1,
+            lang: 'deu',
+            mimeType: 'audio/mp4',
+            roles: ['main']
+        }];
     };
 
-    this.getDataForMedia = function () {
+    this.getAdaptationForMediaInfo = function () {
         return {};
     };
 
@@ -70,7 +83,7 @@ function AdapterMock () {
         };
     };
 
-    this.getIsTextTrack = function () {
+    this.getIsText = function () {
         return false;
     };
 
@@ -80,11 +93,17 @@ function AdapterMock () {
 
     this.getRepresentationSortFunction = function () {
         // Return a silly sort function
-        return function () { return 0; };
+        return function () {
+            return 0;
+        };
     };
 
     this.getManifestUpdatePeriod = function () {
         return 0;
+    };
+
+    this.getPublishTime = function () {
+        return null;
     };
 
     this.updatePeriods = function () {
@@ -106,9 +125,84 @@ function AdapterMock () {
         return false;
     };
 
-    this.convertDataToRepresentationInfo = function () {
-        return null;
+    this.getIsPatch = function () {
+        return false;
     };
+
+    this.isPatchValid = function () {
+        return false;
+    };
+
+    this.applyPatchToManifest = function () {
+    };
+
+    this.getIsTypeOf = function () {
+        return true;
+    };
+
+    this.getCodec = function (adaptation, representationId, addResolutionInfo) {
+        let codec = null;
+
+        if (adaptation && adaptation.Representation && adaptation.Representation.length > 0) {
+            const representation = adaptation.Representation[representationId];
+            if (representation) {
+                codec = representation.mimeType + ';codecs="' + representation.codecs + '"';
+                if (addResolutionInfo && representation.width !== undefined && representation.height !== undefined) {
+                    codec += ';width="' + representation.width + '";height="' + representation.height + '"';
+                }
+            }
+        }
+
+        // If the codec contains a profiles parameter we remove it. Otherwise it will cause problems when checking for codec capabilities of the platform
+        if (codec) {
+            codec = codec.replace(/\sprofiles=[^;]*/g, '');
+        }
+
+        return codec;
+    };
+
+    this.getEssentialPropertiesForRepresentation = function (realRepresentation) {
+        if (!realRepresentation || !realRepresentation.EssentialProperty || !realRepresentation.EssentialProperty.length) {
+            return null;
+        }
+
+        return realRepresentation.EssentialProperty.map((prop) => {
+            return {
+                schemeIdUri: prop.schemeIdUri,
+                value: prop.value
+            };
+        });
+    };
+
+
+    this.getLocation = function () {
+        return [];
+    };
+
+    this.getPatchLocation = function () {
+        return [];
+    };
+
+    this.getRegularPeriods = function () {
+        return this.regularPeriods || [];
+    };
+
+    this.setRegularPeriods = function (periods) {
+        this.regularPeriods = periods;
+    };
+
+    this.getProducerReferenceTimes = function () {
+        return [{
+            UTCTiming: null,
+            applicationScheme: null,
+            id: 7,
+            inband: false,
+            presentationTime: 10000,
+            type: 'encoder',
+            wallClockTime: '1970-01-01T00:00:04Z'
+        }];
+    };
+
 }
 
 export default AdapterMock;

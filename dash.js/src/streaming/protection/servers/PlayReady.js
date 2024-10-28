@@ -31,6 +31,8 @@
 
 /* global escape: true */
 
+import FactoryMaker from '../../../core/FactoryMaker.js';
+
 /**
  * Microsoft PlayReady Test License Server
  *
@@ -134,15 +136,15 @@ function PlayReady() {
     }
 
     instance = {
-        getServerURLFromMessage: getServerURLFromMessage,
-        getHTTPMethod: getHTTPMethod,
-        getResponseType: getResponseType,
-        getLicenseMessage: getLicenseMessage,
-        getErrorResponse: getErrorResponse
+        getServerURLFromMessage,
+        getHTTPMethod,
+        getResponseType,
+        getLicenseMessage,
+        getErrorResponse
     };
 
     return instance;
 }
 
 PlayReady.__dashjs_factory_name = 'PlayReady';
-export default dashjs.FactoryMaker.getSingletonFactory(PlayReady); /* jshint ignore:line */
+export default FactoryMaker.getSingletonFactory(PlayReady); 

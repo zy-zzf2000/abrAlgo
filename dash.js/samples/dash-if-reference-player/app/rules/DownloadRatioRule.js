@@ -51,10 +51,12 @@ function DownloadRatioRuleClass() {
     }
 
     function getBytesLength(request) {
-        return request.trace.reduce((a, b) => a + b.b[0], 0);
+        return request.trace.reduce(function (a, b) {
+            return a + b.b[0];
+        }, 0);
     }
 
-    function getMaxIndex(rulesContext) {
+    function getSwitchRequest(rulesContext) {
 
         let mediaType = rulesContext.getMediaInfo().type;
 
@@ -62,7 +64,7 @@ function DownloadRatioRuleClass() {
         let dashManifest = DashManifestModel(context).getInstance();
         let streamController = StreamController(context).getInstance();
         let abrController = rulesContext.getAbrController();
-        let current = abrController.getQualityFor(mediaType, streamController.getActiveStreamInfo());
+        let current = abrController.getQualityFor(mediaType, streamController.getActiveStreamInfo().id);
 
         let requests = dashMetrics.getHttpRequests(mediaType),
             lastRequest = null,
@@ -106,7 +108,7 @@ function DownloadRatioRuleClass() {
             return SwitchRequest(context).create();
         }
 
-        if(lastRequest.type !== 'MediaSegment' ) {
+        if (lastRequest.type !== 'MediaSegment') {
             logger.debug("[CustomRules][" + mediaType + "][DownloadRatioRule] Last request is not a media segment, bailing.");
             return SwitchRequest(context).create();
         }
@@ -154,7 +156,7 @@ function DownloadRatioRuleClass() {
         }
 
         count = rulesContext.getMediaInfo().representationCount;
-        currentRepresentation = rulesContext.getRepresentationInfo();
+        currentRepresentation = rulesContext.getVoRepresentation();
         currentBandwidth = dashManifest.getBandwidth(currentRepresentation);
         for (i = 0; i < count; i += 1) {
             bandwidths.push(rulesContext.getMediaInfo().bitrateList[i].bandwidth);
@@ -169,7 +171,7 @@ function DownloadRatioRuleClass() {
             p = SwitchRequest.PRIORITY.WEAK;
 
             logger.debug("[CustomRules] SwitchRequest: q=" + q + "/" + (count - 1) + " (" + bandwidths[q] + ")"/* + ", p=" + p*/);
-            return SwitchRequest(context).create(q, {name : DownloadRatioRuleClass.__dashjs_factory_name},  p);
+            return SwitchRequest(context).create(q, { name: DownloadRatioRuleClass.__dashjs_factory_name }, p);
         } else {
             for (i = count - 1; i > current; i -= 1) {
                 if (calculatedBandwidth > (bandwidths[i] * switchUpRatioSafetyFactor)) {
@@ -182,12 +184,12 @@ function DownloadRatioRuleClass() {
             p = SwitchRequest.PRIORITY.STRONG;
 
             logger.debug("[CustomRules] SwitchRequest: q=" + q + "/" + (count - 1) + " (" + bandwidths[q] + ")"/* + ", p=" + p*/);
-            return SwitchRequest(context).create(q, {name : DownloadRatioRuleClass.__dashjs_factory_name},  p);
+            return SwitchRequest(context).create(q, { name: DownloadRatioRuleClass.__dashjs_factory_name }, p);
         }
     }
 
     instance = {
-        getMaxIndex: getMaxIndex
+        getSwitchRequest
     };
 
     setup();

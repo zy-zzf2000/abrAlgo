@@ -28,68 +28,90 @@
  *  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  *  POSSIBILITY OF SUCH DAMAGE.
  */
-import FactoryMaker from '../../core/FactoryMaker';
+import FactoryMaker from '../../core/FactoryMaker.js';
+import Utils from '../../core/Utils.js';
 
 /**
  * @module XHRLoader
  * @ignore
  * @description Manages download of resources via HTTP.
- * @param {Object} cfg - dependencies from parent
  */
-function XHRLoader(cfg) {
-
-    cfg = cfg || {};
-    const requestModifier = cfg.requestModifier;
+function XHRLoader() {
 
     let instance;
+    let xhr;
 
-    function load(httpRequest) {
-
-        // Variables will be used in the callback functions
-        const requestStartTime = new Date();
-        const request = httpRequest.request;
-
-        let xhr = new XMLHttpRequest();
+    /**
+     * Load request
+     * @param {CommonMediaRequest} httpRequest
+     * @param {CommonMediaResponse} httpResponse
+     */
+    function load(httpRequest, httpResponse) {
+        xhr = null;
+        xhr = new XMLHttpRequest();
         xhr.open(httpRequest.method, httpRequest.url, true);
 
-        if (request.responseType) {
-            xhr.responseType = request.responseType;
+        if (httpRequest.responseType) {
+            xhr.responseType = httpRequest.responseType;
         }
 
-        if (request.range) {
-            xhr.setRequestHeader('Range', 'bytes=' + request.range);
+        if (httpRequest.headers) {
+            for (let header in httpRequest.headers) {
+                let value = httpRequest.headers[header];
+                if (value) {
+                    xhr.setRequestHeader(header, value);
+                }
+            }
         }
 
-        if (!request.requestStartDate) {
-            request.requestStartDate = requestStartTime;
+        xhr.withCredentials = httpRequest.credentials === 'include';
+        xhr.timeout = httpRequest.timeout;
+
+        xhr.onload = function () {
+            httpResponse.url = this.responseURL;
+            httpResponse.status = this.status;
+            httpResponse.statusText = this.statusText;
+            httpResponse.headers = Utils.parseHttpHeaders(this.getAllResponseHeaders());
+            httpResponse.data = this.response;
         }
-
-        if (requestModifier) {
-            xhr = requestModifier.modifyRequestHeader(xhr);
-        }
-
-        xhr.withCredentials = httpRequest.withCredentials;
-
-        xhr.onload = httpRequest.onload;
-        xhr.onloadend = httpRequest.onend;
-        xhr.onerror = httpRequest.onerror;
-        xhr.onprogress = httpRequest.progress;
-        xhr.onabort = httpRequest.onabort;
+        xhr.onloadend = httpRequest.customData.onloadend;
+        xhr.onprogress = httpRequest.customData.onprogress;
+        xhr.onabort = httpRequest.customData.onabort;
+        xhr.ontimeout = httpRequest.customData.ontimeout;
 
         xhr.send();
 
-        httpRequest.response = xhr;
+        httpRequest.customData.abort = abort.bind(this);
+        return true;
     }
 
-    function abort(request) {
-        const x = request.response;
-        x.onloadend = x.onerror = x.onprogress = undefined; //Ignore events from aborted requests.
-        x.abort();
+    function abort() {
+        if (xhr) {
+            xhr.onloadend = xhr.onerror = xhr.onprogress = xhr.onload = null; // Remove event listeners
+            xhr.abort();
+            xhr = null;
+        }
+    }
+
+    function getXhr() {
+        return xhr
+    }
+
+    function resetInitialSettings() {
+        abort();
+    }
+
+    function reset() {
+        abort();
+        instance = null;
     }
 
     instance = {
-        load: load,
-        abort: abort
+        load,
+        abort,
+        getXhr,
+        reset,
+        resetInitialSettings
     };
 
     return instance;

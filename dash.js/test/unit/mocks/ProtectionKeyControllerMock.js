@@ -1,6 +1,6 @@
 function ProtectionKeyControllerMock () {
 
-    this.getSupportedKeySystemsFromContentProtection = function (/*cps*/) {
+    this.getSupportedKeySystemMetadataFromContentProtection = function (/*cps*/) {
         return [{}];
     };
 
@@ -11,6 +11,10 @@ function ProtectionKeyControllerMock () {
     this.getLicenseServer = function () {
         return null;
     };
+
+    this.getLicenseServerModelInstance = function () {
+        return {};
+    }
 }
 
 export default ProtectionKeyControllerMock;

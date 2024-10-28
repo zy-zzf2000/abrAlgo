@@ -28,23 +28,24 @@
  *  ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
  *  POSSIBILITY OF SUCH DAMAGE.
  */
-import EventBus from '../../../core/EventBus';
-import Events from '../../../core/events/Events';
-import FactoryMaker from '../../../core/FactoryMaker';
-import Debug from '../../../core/Debug';
-import SwitchRequest from '../SwitchRequest';
-import Constants from '../../constants/Constants';
-import MetricsConstants from '../../constants/MetricsConstants';
+import EventBus from '../../../core/EventBus.js';
+import Events from '../../../core/events/Events.js';
+import FactoryMaker from '../../../core/FactoryMaker.js';
+import Debug from '../../../core/Debug.js';
+import SwitchRequest from '../SwitchRequest.js';
+import Constants from '../../constants/Constants.js';
+import MetricsConstants from '../../constants/MetricsConstants.js';
+import MediaPlayerEvents from '../../MediaPlayerEvents.js';
+import Settings from '../../../core/Settings.js';
 
 function InsufficientBufferRule(config) {
 
     config = config || {};
-    const INSUFFICIENT_BUFFER_SAFETY_FACTOR = 0.5;
 
     const context = this.context;
-
     const eventBus = EventBus(context).getInstance();
     const dashMetrics = config.dashMetrics;
+    const settings = Settings(context).getInstance();
 
     let instance,
         logger,
@@ -52,94 +53,102 @@ function InsufficientBufferRule(config) {
 
     function setup() {
         logger = Debug(context).getInstance().getLogger(instance);
-        resetInitialSettings();
-        eventBus.on(Events.PLAYBACK_SEEKING, onPlaybackSeeking, instance);
+        _resetInitialSettings();
+        eventBus.on(MediaPlayerEvents.PLAYBACK_SEEKING, _onPlaybackSeeking, instance);
+        eventBus.on(Events.BYTES_APPENDED_END_FRAGMENT, _onBytesAppended, instance);
     }
 
-    function checkConfig() {
-        if (!dashMetrics || !dashMetrics.hasOwnProperty('getCurrentBufferLevel') || !dashMetrics.hasOwnProperty('getLatestBufferInfoVO')) {
-            throw new Error(Constants.MISSING_CONFIG_ERROR);
-        }
-    }
-    /*
-     * InsufficientBufferRule does not kick in before the first BUFFER_LOADED event happens. This is reset at every seek.
-     *
-     * If a BUFFER_EMPTY event happens, then InsufficientBufferRule returns switchRequest.quality=0 until BUFFER_LOADED happens.
-     *
-     * Otherwise InsufficientBufferRule gives a maximum bitrate depending on throughput and bufferLevel such that
+
+    /**
+     * If a BUFFER_EMPTY event happens, then InsufficientBufferRule returns switchRequest. Quality=0 until BUFFER_LOADED happens.
+     * Otherwise, InsufficientBufferRule gives a maximum bitrate depending on throughput and bufferLevel such that
      * a whole fragment can be downloaded before the buffer runs out, subject to a conservative safety factor of 0.5.
      * If the bufferLevel is low, then InsufficientBufferRule avoids rebuffering risk.
      * If the bufferLevel is high, then InsufficientBufferRule give a high MaxIndex allowing other rules to take over.
+     * @param rulesContext
+     * @return {object}
      */
-    function getMaxIndex (rulesContext) {
+    function getSwitchRequest(rulesContext) {
         const switchRequest = SwitchRequest(context).create();
+        switchRequest.rule = this.getClassName();
 
         if (!rulesContext || !rulesContext.hasOwnProperty('getMediaType')) {
             return switchRequest;
         }
 
-        checkConfig();
-
         const mediaType = rulesContext.getMediaType();
-        const lastBufferStateVO = dashMetrics.getLatestBufferInfoVO(mediaType, true, MetricsConstants.BUFFER_STATE);
-        const representationInfo = rulesContext.getRepresentationInfo();
-        const fragmentDuration = representationInfo.fragmentDuration;
+        const currentBufferState = dashMetrics.getCurrentBufferState(mediaType);
+        const voRepresentation = rulesContext.getRepresentation();
+        const fragmentDuration = voRepresentation.fragmentDuration;
+        const scheduleController = rulesContext.getScheduleController();
+        const playbackController = scheduleController.getPlaybackController();
 
-        // Don't ask for a bitrate change if there is not info about buffer state or if fragmentDuration is not defined
-        if (!lastBufferStateVO || !wasFirstBufferLoadedEventTriggered(mediaType, lastBufferStateVO) || !fragmentDuration) {
+        if (!_shouldExecuteRule(playbackController, mediaType, fragmentDuration)) {
             return switchRequest;
         }
 
-        if (lastBufferStateVO.state === MetricsConstants.BUFFER_EMPTY) {
+        const mediaInfo = rulesContext.getMediaInfo();
+        const abrController = rulesContext.getAbrController();
+        if (currentBufferState && currentBufferState.state === MetricsConstants.BUFFER_EMPTY) {
             logger.debug('[' + mediaType + '] Switch to index 0; buffer is empty.');
-            switchRequest.quality = 0;
-            switchRequest.reason = 'InsufficientBufferRule: Buffer is empty';
+            switchRequest.representation = abrController.getOptimalRepresentationForBitrate(mediaInfo, 0, true);
+            switchRequest.reason = {
+                message: '[InsufficientBufferRule]: Switching to lowest Representation because buffer is empty'
+            };
         } else {
-            const mediaInfo = rulesContext.getMediaInfo();
-            const abrController = rulesContext.getAbrController();
-            const throughputHistory = abrController.getThroughputHistory();
+            const throughputController = rulesContext.getThroughputController();
+            const bufferLevel = dashMetrics.getCurrentBufferLevel(mediaType);
+            const throughput = throughputController.getAverageThroughput(mediaType, null, NaN);
+            const safeThroughput = throughput * settings.get().streaming.abr.rules.insufficientBufferRule.parameters.throughputSafetyFactor;
+            const bitrate = safeThroughput * bufferLevel / fragmentDuration
 
-            const bufferLevel = dashMetrics.getCurrentBufferLevel(mediaType, true);
-            const throughput = throughputHistory.getAverageThroughput(mediaType);
-            const latency = throughputHistory.getAverageLatency(mediaType);
-            const bitrate = throughput * (bufferLevel / fragmentDuration) * INSUFFICIENT_BUFFER_SAFETY_FACTOR;
+            if (isNaN(bitrate) || bitrate <= 0) {
+                return switchRequest
+            }
 
-            switchRequest.quality = abrController.getQualityForBitrate(mediaInfo, bitrate, latency);
-            switchRequest.reason = 'InsufficientBufferRule: being conservative to avoid immediate rebuffering';
+            switchRequest.representation = abrController.getOptimalRepresentationForBitrate(mediaInfo, bitrate, true);
+            switchRequest.reason = {
+                message: '[InsufficientBufferRule]: Limiting maximum bitrate to avoid a buffer underrun.',
+                bitrate
+            };
         }
 
         return switchRequest;
     }
 
-    function wasFirstBufferLoadedEventTriggered(mediaType, currentBufferState) {
-        bufferStateDict[mediaType] = bufferStateDict[mediaType] || {};
-
-        let wasTriggered = false;
-        if (bufferStateDict[mediaType].firstBufferLoadedEvent) {
-            wasTriggered = true;
-        } else if (currentBufferState && currentBufferState.state === MetricsConstants.BUFFER_LOADED) {
-            bufferStateDict[mediaType].firstBufferLoadedEvent = true;
-            wasTriggered = true;
-        }
-        return wasTriggered;
+    function _shouldExecuteRule(playbackController, mediaType, fragmentDuration) {
+        const lowLatencyEnabled = playbackController.getLowLatencyModeEnabled();
+        return !lowLatencyEnabled && bufferStateDict[mediaType].ignoreCount <= 0 && fragmentDuration;
     }
 
-    function resetInitialSettings() {
+    function _resetInitialSettings() {
+        const segmentIgnoreCount = settings.get().streaming.abr.rules.insufficientBufferRule.parameters.segmentIgnoreCount
         bufferStateDict = {};
+        bufferStateDict[Constants.VIDEO] = { ignoreCount: segmentIgnoreCount };
+        bufferStateDict[Constants.AUDIO] = { ignoreCount: segmentIgnoreCount };
     }
 
-    function onPlaybackSeeking() {
-        resetInitialSettings();
+    function _onPlaybackSeeking() {
+        _resetInitialSettings();
+    }
+
+    function _onBytesAppended(e) {
+        if (!isNaN(e.startTime) && (e.mediaType === Constants.AUDIO || e.mediaType === Constants.VIDEO)) {
+            if (bufferStateDict[e.mediaType].ignoreCount > 0) {
+                bufferStateDict[e.mediaType].ignoreCount--;
+            }
+        }
     }
 
     function reset() {
-        resetInitialSettings();
-        eventBus.off(Events.PLAYBACK_SEEKING, onPlaybackSeeking, instance);
+        _resetInitialSettings();
+        eventBus.off(MediaPlayerEvents.PLAYBACK_SEEKING, _onPlaybackSeeking, instance);
+        eventBus.off(Events.BYTES_APPENDED_END_FRAGMENT, _onBytesAppended, instance);
     }
 
     instance = {
-        getMaxIndex: getMaxIndex,
-        reset: reset
+        getSwitchRequest,
+        reset
     };
 
     setup();

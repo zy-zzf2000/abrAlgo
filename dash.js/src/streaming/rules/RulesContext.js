@@ -29,19 +29,20 @@
  *  POSSIBILITY OF SUCH DAMAGE.
  */
 
-import FactoryMaker from '../../core/FactoryMaker';
+import FactoryMaker from '../../core/FactoryMaker.js';
 
 function RulesContext(config) {
 
     config = config || {};
     let instance;
     const abrController = config.abrController;
-    const switchHistory = config.switchHistory;
+    const throughputController = config.throughputController;
+    const switchRequestHistory = config.switchRequestHistory;
     const droppedFramesHistory = config.droppedFramesHistory;
     const currentRequest = config.currentRequest;
-    const bufferOccupancyABR = config.useBufferOccupancyABR;
     const scheduleController = config.streamProcessor ? config.streamProcessor.getScheduleController() : null;
-    const representationInfo = config.streamProcessor ? config.streamProcessor.getRepresentationInfo() : null;
+    const voRepresentation = config.streamProcessor ? config.streamProcessor.getRepresentation() : null;
+    const videoModel = config.videoModel ? config.videoModel : null;
 
     function getMediaType() {
         const mediaInfo = getMediaInfo();
@@ -54,11 +55,11 @@ function RulesContext(config) {
     }
 
     function getMediaInfo() {
-        return representationInfo ? representationInfo.mediaInfo : null;
+        return voRepresentation ? voRepresentation.mediaInfo : null;
     }
 
-    function getRepresentationInfo() {
-        return representationInfo;
+    function getRepresentation() {
+        return voRepresentation;
     }
 
     function getScheduleController() {
@@ -69,8 +70,16 @@ function RulesContext(config) {
         return abrController;
     }
 
-    function getSwitchHistory() {
-        return switchHistory;
+    function getThroughputController() {
+        return throughputController;
+    }
+
+    function getSwitchRequestHistory() {
+        return switchRequestHistory;
+    }
+
+    function getVideoModel() {
+        return videoModel;
     }
 
     function getDroppedFramesHistory() {
@@ -81,21 +90,18 @@ function RulesContext(config) {
         return currentRequest;
     }
 
-    function useBufferOccupancyABR() {
-        return bufferOccupancyABR;
-    }
-
     instance = {
-        getMediaType: getMediaType,
-        getMediaInfo: getMediaInfo,
-        getDroppedFramesHistory: getDroppedFramesHistory,
-        getCurrentRequest: getCurrentRequest,
-        getSwitchHistory: getSwitchHistory,
-        getStreamInfo: getStreamInfo,
-        getScheduleController: getScheduleController,
-        getAbrController: getAbrController,
-        getRepresentationInfo: getRepresentationInfo,
-        useBufferOccupancyABR: useBufferOccupancyABR
+        getAbrController,
+        getCurrentRequest,
+        getDroppedFramesHistory,
+        getMediaInfo,
+        getMediaType,
+        getRepresentation,
+        getScheduleController,
+        getStreamInfo,
+        getSwitchRequestHistory,
+        getThroughputController,
+        getVideoModel,
     };
 
     return instance;

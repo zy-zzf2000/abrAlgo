@@ -1,5 +1,3 @@
-import VideoElementMock from './VideoElementMock';
-
 class VideoModelMock {
     constructor() {
         this.isplaying = false;
@@ -12,7 +10,7 @@ class VideoModelMock {
         this.State = 'ready';
         this.tracks = [];
         this.source = null;
-        this.element = new VideoElementMock();
+        this.element = document.createElement('video');
         this.height = 600;
         this.width = 800;
         this.events = {};
@@ -55,15 +53,16 @@ class VideoModelMock {
 
     getPlaybackQuality() {
         let element = this.element;
-        if (!element) { return null; }
+        if (!element) {
+            return null;
+        }
         let hasWebKit = ('webkitDroppedFrameCount' in element) && ('webkitDecodedFrameCount' in element);
         let hasQuality = ('getVideoPlaybackQuality' in element);
         let result = null;
 
         if (hasQuality) {
             result = element.getVideoPlaybackQuality();
-        }
-        else if (hasWebKit) {
+        } else if (hasWebKit) {
             result = {
                 droppedVideoFrames: element.webkitDroppedFrameCount,
                 totalVideoFrames: element.webkitDroppedFrameCount + element.webkitDecodedFrameCount,
@@ -125,6 +124,7 @@ class VideoModelMock {
 
     setCurrentTime(time) {
         this.time = time;
+        this.fireEvent('seeking', {});
     }
 
     getTime() {
@@ -167,11 +167,21 @@ class VideoModelMock {
     }
 
     getCurrentCue(textTrack) {
-        return this.element.getCurrentCue(textTrack);
+        const textTrackList = this.element.textTracks;
+        const track = textTrackList.getTrackById(textTrack.id);
+        console.log('track', track);
+        if (!track) {
+            return null;
+        }
+        return track.cues[0];
     }
 
     getTTMLRenderingDiv() {
         return {};
+    }
+
+    getVttRenderingDiv() {
+        return
     }
 
     setSource(source) {
@@ -180,6 +190,14 @@ class VideoModelMock {
 
     getSource() {
         return this.source;
+    }
+
+    isStalled() {
+        return false;
+    }
+
+    setPlaybackRate() {
+
     }
 }
 
